@@ -310,7 +310,7 @@ for path in admin login backup wp-admin config .git .env .htaccess .svn phpinfo.
         dump.sql|database.sql) echo "$body" | grep -qi "CREATE TABLE\|INSERT INTO\|DROP TABLE" && critico "BACKUP BD: $ALVO/$path" ;;
         phpinfo.php|info.php|test.php|debug.php) echo "$body" | grep -qi "phpinfo\|PHP Version\|PHP License" && critico "INFO PHP EXPOSTA: $ALVO/$path" ;;
         crossdomain.xml) echo "$body" | grep -qi "allow-access-from" && aviso "CROSSDOMAIN.XML: $ALVO/$path permite acesso externo" ;;
-        *) critico "ACESSO LIVRE: $ALVO/$path (HTTP $code)" ;;
+        *) echo "$body" | grep -qi "set_cookie\|begetok\|location.reload" && aviso "POSSIVEL FALSO POSITIVO: $ALVO/$path (so seta cookie)" || critico "ACESSO LIVRE: $ALVO/$path (HTTP $code)" ;;
       esac
     elif [ "$code" = "403" ]; then
       aviso "ACESSO RESTRITO: $ALVO/$path (HTTP $code)"
