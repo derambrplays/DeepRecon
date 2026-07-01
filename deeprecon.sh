@@ -187,7 +187,7 @@ for ALVO in "${ALVOS[@]}"; do
 
 DOMINIO=$(echo "$ALVO" | sed 's|https\?://||' | cut -d/ -f1 | cut -d: -f1)
 PROTOCOLO=$(echo "$ALVO" | grep -q 'https' && echo "https" || echo "http")
-REPORT="/tmp/vulnscan_${DOMINIO}_$(date +%Y%m%d_%H%M%S).txt"
+REPORT="/tmp/DeepRecon_${DOMINIO}_$(date +%Y%m%d_%H%M%S).txt"
 > "$REPORT"
 
 TOTAL_PASSOS=24
@@ -293,35 +293,36 @@ fi
 # ===== PASSO 8: ARQUIVOS SENSIVEIS =====
 progresso "Procurando arquivos sensiveis"
 for path in admin login backup wp-admin config .git .env .htaccess .svn phpinfo.php test.php info.php debug.php console painel dashboard painel administrativo xmlrpc.php wp-config.php.bak wp-config.php~ dump.sql database.sql server-status server-info crossdomain.xml; do
-  code=$(curl -s -L -o /dev/null -w "%{http_code}" --max-time 3 "$ALVO/$path" 2>/dev/null)
-  body=$(curl -s -L --max-time 3 "$ALVO/$path" 2>/dev/null | head -c 500)
-  if [ "$code" != "000" ]; then
-    if [ "$code" = "200" ]; then
+  body_code=$(curl -s -L --max-time 3 -o /tmp/.deeprecon_body -w "%{http_code}" "$ALVO/$path" 2>/dev/null)
+  body=$(cat /tmp/.deeprecon_body 2>/dev/null | head -c 500)
+  if [ "$body_code" != "000" ]; then
+    if [ "$body_code" = "200" ]; then
       case "$path" in
         admin|login|wp-admin|painel|dashboard|administrativo|console)
           has_content=$(echo "$body" | grep -ciE "<html|<body|<form|<div|<input" 2>/dev/null)
           has_cookie=$(echo "$body" | grep -ci "set_cookie\|begetok\|location.reload" 2>/dev/null)
-          [ "$has_content" -gt 2 ] && [ "$has_cookie" -eq 0 ] && critico "ACESSO LIVRE: $ALVO/$path (HTTP $code)"
+          [ "$has_content" -gt 2 ] && [ "$has_cookie" -eq 0 ] && critico "ACESSO LIVRE: $ALVO/$path (HTTP $body_code)"
           [ "$has_content" -gt 0 ] && [ "$has_cookie" -gt 0 ] && aviso "POSSIVEL FALSO POSITIVO: $ALVO/$path (so seta cookie)"
+          [ "$has_content" -le 2 ] && [ "$has_cookie" -eq 0 ] && aviso "ACESSO LIVRE: $ALVO/$path (pouco conteudo)"
           ;;
         .git) echo "$body" | grep -qi "\[core\]" && critico "REPOSITORIO GIT EXPOSTO: $ALVO/$path" ;;
-        .env) echo "$body" | grep -qi "DB_\|APP_\|SECRET\|PASSWORD\|KEY" && critico "ARQUIVO .ENV EXPOSTO: $ALVO/$path" ;;
-        wp-config.php.bak|wp-config.php~) echo "$body" | grep -qi "DB_NAME\|DB_USER\|DB_PASSWORD\|WP_" && critico "BACKUP WP-CONFIG: $ALVO/$path" ;;
-        dump.sql|database.sql) echo "$body" | grep -qi "CREATE TABLE\|INSERT INTO\|DROP TABLE" && critico "BACKUP BD: $ALVO/$path" ;;
-        phpinfo.php|info.php|test.php|debug.php) echo "$body" | grep -qi "phpinfo\|PHP Version\|PHP License" && critico "INFO PHP EXPOSTA: $ALVO/$path" ;;
+        .env) echo "$body" | grep -qi "DB_\|APP_\|SECRET\|PASSWORD\|KEY\|API" && critico "ARQUIVO .ENV EXPOSTO: $ALVO/$path" ;;
+        wp-config.php.bak|wp-config.php~) echo "$body" | grep -qi "DB_NAME\|DB_USER\|DB_PASSWORD\|WP_\|define" && critico "BACKUP WP-CONFIG: $ALVO/$path" ;;
+        dump.sql|database.sql) echo "$body" | grep -qi "CREATE TABLE\|INSERT INTO\|DROP TABLE\|--\|DELETE FROM" && critico "BACKUP BD: $ALVO/$path" ;;
+        phpinfo.php|info.php|test.php|debug.php) echo "$body" | grep -qi "phpinfo\|PHP Version\|PHP License\|php version" && critico "INFO PHP EXPOSTA: $ALVO/$path" ;;
         crossdomain.xml) echo "$body" | grep -qi "allow-access-from" && aviso "CROSSDOMAIN.XML: $ALVO/$path permite acesso externo" ;;
-        *) echo "$body" | grep -qi "set_cookie\|begetok\|location.reload" && aviso "POSSIVEL FALSO POSITIVO: $ALVO/$path (so seta cookie)" || critico "ACESSO LIVRE: $ALVO/$path (HTTP $code)" ;;
+        config) echo "$body" | grep -qi "DB_\|PASSWORD\|SECRET\|KEY\|HOST\|USER" && critico "CONFIG EXPOSTO: $ALVO/$path" ;;
+        backup) echo "$body" | grep -qi "backup\|directory\|\.sql\|\.bak\|dump" && aviso "DIRETORIO DE BACKUP: $ALVO/$path" ;;
+        *) echo "$body" | grep -qi "set_cookie\|begetok\|location.reload" && aviso "POSSIVEL FALSO POSITIVO: $ALVO/$path (so seta cookie)" || critico "ACESSO LIVRE: $ALVO/$path (HTTP $body_code)" ;;
       esac
-    elif [ "$code" = "403" ]; then
-      aviso "ACESSO RESTRITO: $ALVO/$path (HTTP $code)"
-    elif [ "$code" = "401" ]; then
-      aviso "AUTENTICACAO REQUERIDA: $ALVO/$path (HTTP $code)"
-    elif [ "$code" = "301" ] || [ "$code" = "302" ]; then
-      redirect_to=$(curl -s -L -o /dev/null -w "%{url_effective}" --max-time 3 "$ALVO/$path" 2>/dev/null)
-      echo "$redirect_to" | grep -qi "$DOMINIO" || aviso "REDIRECIONA EXTERNO: $ALVO/$path -> $redirect_to"
+    elif [ "$body_code" = "403" ]; then
+      aviso "ACESSO RESTRITO: $ALVO/$path (HTTP $body_code)"
+    elif [ "$body_code" = "401" ]; then
+      aviso "AUTENTICACAO REQUERIDA: $ALVO/$path (HTTP $body_code)"
     fi
   fi
 done
+rm -f /tmp/.deeprecon_body 2>/dev/null
 
 # ===== PASSO 9: SQLMAP =====
 progresso "SQLMap - Testando SQL Injection"
@@ -387,7 +388,11 @@ fi
 # ===== PASSO 13: NIKTO =====
 progresso "Nikto - Varredura de vulnerabilidades"
 if command -v nikto &>/dev/null; then
-  nikto -h "$ALVO" -ssl -timeout 10 -no404 -C all 2>/dev/null | grep -iE "OSVDB|vulnerable|vuln|click|XSS|SQL|path|disclosure|error|backup|interesting|account|upload|exec|shell|injection" | head -30
+  if [ "$PROTOCOLO" = "https" ]; then
+    nikto -h "$ALVO" -ssl -timeout 10 -no404 2>/dev/null | grep -iE "OSVDB|vulnerable|vuln|click|XSS|SQL|path|disclosure|error|backup|interesting|account|upload|exec|shell|injection" | head -30
+  else
+    nikto -h "$ALVO" -timeout 10 -no404 2>/dev/null | grep -iE "OSVDB|vulnerable|vuln|click|XSS|SQL|path|disclosure|error|backup|interesting|account|upload|exec|shell|injection" | head -30
+  fi
 fi
 
 # ===== PASSO 14: WPSCAN =====
@@ -432,21 +437,22 @@ echo "$PUT_CODE" | grep -qE "200|201|204" && critico "Metodo PUT habilitado! (HT
 # ===== PASSO 20: SERVICOS COMUNS =====
 progresso "Procurando servicos comuns"
 for srv in cgi-bin/ cgi-bin/test.cgi server-status server-info phpMyAdmin phpmyadmin phppgadmin adminer.php mysql phpinfo.php info.php; do
-  code=$(curl -s -L -o /dev/null -w "%{http_code}" --max-time 3 "$ALVO/$srv" 2>/dev/null)
-  body=$(curl -s -L --max-time 3 "$ALVO/$srv" 2>/dev/null)
-  if [ "$code" = "200" ]; then
+  body_code=$(curl -s -L --max-time 3 -o /tmp/.deeprecon_srv -w "%{http_code}" "$ALVO/$srv" 2>/dev/null)
+  if [ "$body_code" = "200" ]; then
+    body=$(cat /tmp/.deeprecon_srv 2>/dev/null)
     case "$srv" in
       phpMyAdmin|phpmyadmin) echo "$body" | grep -qi "phpmyadmin\|phpMyAdmin" && critico "SERVICO ENCONTRADO: $ALVO/$srv" ;;
       phppgadmin) echo "$body" | grep -qi "phppgadmin\|PostgreSQL" && critico "SERVICO ENCONTRADO: $ALVO/$srv" ;;
-      adminer.php) echo "$body" | grep -qi "adminer\|Adminer\|Login\|login" && critico "SERVICO ENCONTRADO: $ALVO/$srv" ;;
+      adminer.php) echo "$body" | grep -qi "adminer\|Adminer" && critico "SERVICO ENCONTRADO: $ALVO/$srv" ;;
       phpinfo.php|info.php) echo "$body" | grep -qi "phpinfo\|PHP Version\|php version\|PHP License" && critico "SERVICO ENCONTRADO: $ALVO/$srv" ;;
       mysql) echo "$body" | grep -qi "mysql\|MySQL\|phpMyAdmin" && critico "SERVICO ENCONTRADO: $ALVO/$srv" ;;
       server-status) echo "$body" | grep -qi "server status\|Apache.*Server\|nginx.*status" && critico "SERVICO ENCONTRADO: $ALVO/$srv" ;;
       server-info) echo "$body" | grep -qi "server info\|Apache.*Server" && critico "SERVICO ENCONTRADO: $ALVO/$srv" ;;
-      *) critico "SERVICO ENCONTRADO: $ALVO/$srv" ;;
+      cgi-bin/test.cgi) echo "$body" | grep -qi "cgi\|content-type" && critico "SERVICO ENCONTRADO: $ALVO/$srv" ;;
     esac
   fi
 done
+rm -f /tmp/.deeprecon_srv 2>/dev/null
 
 # ===== PASSO 21: CVE CHECK =====
 progresso "Verificando versoes antigas"
@@ -460,7 +466,7 @@ echo "$SERVER" | grep -qi "iis/6\|iis/7" && critico "IIS versao antiga!"
 progresso "Exploracao agressiva - testando invasao"
 info "Testando XSS refleto..."
 XSS_PAYLOADS=("<script>alert(1)</script>" "\"><script>alert(1)</script>" "'><script>alert(1)</script>")
-for param in $(curl -s "$ALVO" 2>/dev/null | grep -oP 'name="?\K[a-z_]+(?="?)' | head -5); do
+for param in $(curl -s "$ALVO" 2>/dev/null | tr "'" '"' | grep -oP 'name="?\K[a-z_][a-zA-Z0-9_]*' | sort -u | head -5); do
   for payload in "${XSS_PAYLOADS[@]}"; do
     code=$(curl -s -o /dev/null -w "%{http_code}" --max-time 3 "${ALVO}?${param}=$(python3 -c "import urllib.parse; print(urllib.parse.quote('$payload'))" 2>/dev/null)" 2>/dev/null)
     [ "$code" = "200" ] && aviso "Possivel XSS: $ALVO?$param=$payload"
