@@ -196,11 +196,14 @@ sleep 3
 for ALVO in "${ALVOS[@]}"; do
 
 DOMINIO=$(echo "$ALVO" | sed 's|https\?://||' | cut -d/ -f1 | cut -d: -f1)
+PORTA=$(echo "$ALVO" | sed 's|https\?://||' | cut -d/ -f1 | grep -o ':[0-9]*$' | tr -d ':')
+[ -z "$PORTA" ] && [ "$PROTOCOLO" = "https" ] && PORTA=443
+[ -z "$PORTA" ] && PORTA=80
 PROTOCOLO=$(echo "$ALVO" | grep -q 'https' && echo "https" || echo "http")
 REPORT="/tmp/DeepRecon_${DOMINIO}_$(date +%Y%m%d_%H%M%S).txt"
 > "$REPORT"
 
-TOTAL_PASSOS=24
+TOTAL_PASSOS=25
 PASSO_ATUAL=0
 
 progresso() {
@@ -543,7 +546,60 @@ for bak in .bak .old .swp ~ .save backup.sql dump.sql db.sql config.php.bak; do
   [ "$BAK_CODE" = "200" ] && critico "BACKUP EXPOSTO: $ALVO/config.php$bak"
 done
 
-# ===== PASSO 23: IA BRAIN - MOTOR COGNITIVO =====
+# ===== PASSO 23: METASPLOIT - SCANNERS AUXILIARES =====
+progresso "Metasploit - Rodando scanners auxiliares"
+if command -v msfconsole &>/dev/null; then
+  MSF_RC=$(mktemp)
+  DOMINIO_ESC=$(echo "$DOMINIO" | sed 's/\./\\./g')
+  cat > "$MSF_RC" << EOM
+use auxiliary/scanner/http/options
+set RHOSTS $DOMINIO
+set RPORT $PORTA
+set THREADS 20
+run
+
+use auxiliary/scanner/http/http_header
+set RHOSTS $DOMINIO
+set RPORT $PORTA
+set THREADS 20
+run
+
+use auxiliary/scanner/http/verb_auth_bypass
+set RHOSTS $DOMINIO
+set RPORT $PORTA
+set THREADS 20
+run
+
+use auxiliary/scanner/http/git_scanner
+set RHOSTS $DOMINIO
+set RPORT $PORTA
+set THREADS 20
+run
+
+use auxiliary/scanner/http/host_header_injection
+set RHOSTS $DOMINIO
+set RPORT $PORTA
+set THREADS 20
+run
+
+use auxiliary/scanner/http/webdav_scanner
+set RHOSTS $DOMINIO
+set RPORT $PORTA
+set THREADS 20
+run
+
+exit
+EOM
+  MSF_OUT=$(timeout 90 msfconsole -q -r "$MSF_RC" 2>/dev/null)
+  rm -f "$MSF_RC"
+  echo "$MSF_OUT" | grep -E '\[+\]|\[!\]|\[-\]' | grep -vi 'No response' | while IFS= read -r line; do
+    clean=$(echo "$line" | sed 's/\x1b\[[0-9;]*m//g' | xargs)
+    echo "$clean" | grep -qiE 'vulnerable|found|exposed|disclosure|enabled|accessible|interesting|upload|exec|shell|injection|bypass' && critico "METASPLOIT: $clean"
+    echo "$clean" | grep -qiE '\[+\]|detected|allowed|missing|directory|backup|info' && aviso "METASPLOIT: $clean"
+  done
+fi
+
+# ===== PASSO 24: IA BRAIN - MOTOR COGNITIVO =====
 progresso "IA Brain - Pensando... (motor cognitivo ativado)"
 REPORT_TEXT=$(cat "$REPORT" 2>/dev/null)
 TOTAL_CRIT=$(echo "$REPORT_TEXT" | grep -c "\[CRITICO\]")
@@ -811,7 +867,7 @@ echo -e "${MAGENTA}${BOLD}║${RESET}  ${BOLD}Emitir relatorio...${RESET}  ${CYA
 echo ""
 
 # ============================================================
-# PASSO 24: INFORMACOES DO SITE
+# PASSO 25: INFORMACOES DO SITE
 # ============================================================
 echo -e "${GREEN}${BOLD}╔══════════════════════════════════════════════════╗${RESET}"
 echo -e "${GREEN}${BOLD}║           INFORMACOES DO SITE                   ║${RESET}"
