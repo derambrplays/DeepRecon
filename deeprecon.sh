@@ -59,64 +59,74 @@ echo -e "${YELLOW}${BOLD}║${RESET}"
 echo -e "${YELLOW}${BOLD}║${RESET}  5. Ao continuar, voce aceita estes termos."
 echo -e "${YELLOW}${BOLD}╚══════════════════════════════════════════════════╝${RESET}"
 echo ""
-echo -e "${BOLD}Ao continuar, voce aceita os termos acima.${RESET}"
-echo -ne "${YELLOW}Digite ${GREEN}S${RESET}${YELLOW} para aceitar ou ${RED}N${RESET}${YELLOW} para sair: ${RESET}"
-read -r ACEITA
-if [[ "$ACEITA" != "S" && "$ACEITA" != "s" ]]; then
-  echo -e "${RED}Termos nao aceitos. Saindo.${RESET}"
-  exit 1
+if [ $# -eq 0 ]; then
+  echo -e "${BOLD}Ao continuar, voce aceita os termos acima.${RESET}"
+  echo -ne "${YELLOW}Digite ${GREEN}S${RESET}${YELLOW} para aceitar ou ${RED}N${RESET}${YELLOW} para sair: ${RESET}"
+  read -r ACEITA
+  if [[ "$ACEITA" != "S" && "$ACEITA" != "s" ]]; then
+    echo -e "${RED}Termos nao aceitos. Saindo.${RESET}"
+    exit 1
+  fi
 fi
 
 # ============================================================
 # SELECAO DE MODO: ALVO UNICO OU MULTIPLOS ALVOS
 # ============================================================
 ALVOS=()
-echo ""
-echo -e "${BOLD}Selecione o modo de scan:${RESET}"
-echo -e "  ${GREEN}[1]${RESET} Alvo unico"
-echo -e "  ${GREEN}[2]${RESET} Multiplos alvos"
-echo -e "  ${GREEN}[3]${RESET} Arquivo de alvos (-f)"
-echo ""
-printf "${YELLOW}Escolha (1/2/3): ${RESET}"
-read -r MODO
 
-case $MODO in
-  1)
-    printf "${YELLOW}Digite a URL do alvo: ${RESET}"
-    read -r URL
-    echo "$URL" | grep -qE '^https?://' || URL="http://$URL"
-    ALVOS+=("$URL")
-    ;;
-  2)
-    printf "${YELLOW}Digite as URLs (separadas por espaco): ${RESET}"
-    read -ra ALVOS_USER
-    for url in "${ALVOS_USER[@]}"; do
-      [ -n "$url" ] && {
-        echo "$url" | grep -qE '^https?://' || url="http://$url"
-        ALVOS+=("$url")
-      }
-    done
-    ;;
-  3)
-    printf "${YELLOW}Caminho do arquivo: ${RESET}"
-    read -r ARQUIVO
-    if [ ! -f "$ARQUIVO" ]; then
-      echo -e "${RED}Arquivo nao encontrado: $ARQUIVO${RESET}"
+if [ $# -ge 1 ]; then
+  for url in "$@"; do
+    echo "$url" | grep -qE '^https?://' || url="http://$url"
+    ALVOS+=("$url")
+  done
+else
+  echo ""
+  echo -e "${BOLD}Selecione o modo de scan:${RESET}"
+  echo -e "  ${GREEN}[1]${RESET} Alvo unico"
+  echo -e "  ${GREEN}[2]${RESET} Multiplos alvos"
+  echo -e "  ${GREEN}[3]${RESET} Arquivo de alvos (-f)"
+  echo ""
+  printf "${YELLOW}Escolha (1/2/3): ${RESET}"
+  read -r MODO
+
+  case $MODO in
+    1)
+      printf "${YELLOW}Digite a URL do alvo: ${RESET}"
+      read -r URL
+      echo "$URL" | grep -qE '^https?://' || URL="http://$URL"
+      ALVOS+=("$URL")
+      ;;
+    2)
+      printf "${YELLOW}Digite as URLs (separadas por espaco): ${RESET}"
+      read -ra ALVOS_USER
+      for url in "${ALVOS_USER[@]}"; do
+        [ -n "$url" ] && {
+          echo "$url" | grep -qE '^https?://' || url="http://$url"
+          ALVOS+=("$url")
+        }
+      done
+      ;;
+    3)
+      printf "${YELLOW}Caminho do arquivo: ${RESET}"
+      read -r ARQUIVO
+      if [ ! -f "$ARQUIVO" ]; then
+        echo -e "${RED}Arquivo nao encontrado: $ARQUIVO${RESET}"
+        exit 1
+      fi
+      while IFS= read -r url || [ -n "$url" ]; do
+        url=$(echo "$url" | xargs)
+        [ -n "$url" ] && [[ "$url" != \#* ]] && {
+          echo "$url" | grep -qE '^https?://' || url="http://$url"
+          ALVOS+=("$url")
+        }
+      done < "$ARQUIVO"
+      ;;
+    *)
+      echo -e "${RED}Opcao invalida. Abortando.${RESET}"
       exit 1
-    fi
-    while IFS= read -r url || [ -n "$url" ]; do
-      url=$(echo "$url" | xargs)
-      [ -n "$url" ] && [[ "$url" != \#* ]] && {
-        echo "$url" | grep -qE '^https?://' || url="http://$url"
-        ALVOS+=("$url")
-      }
-    done < "$ARQUIVO"
-    ;;
-  *)
-    echo -e "${RED}Opcao invalida. Abortando.${RESET}"
-    exit 1
-    ;;
-esac
+      ;;
+  esac
+fi
 
 if [ ${#ALVOS[@]} -eq 0 ]; then
   echo -e "${RED}Nenhuma URL informada. Abortando.${RESET}"
