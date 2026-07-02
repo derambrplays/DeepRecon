@@ -21,6 +21,41 @@ RESET='\033[0m'
 BOLD='\033[1m'
 
 # ============================================================
+# DETECCAO DE HARDWARE
+# ============================================================
+CPU_CORES=$(nproc 2>/dev/null || echo 1)
+TOTAL_RAM=$(free -m 2>/dev/null | awk '/Mem:/{print $2}')
+[ -z "$TOTAL_RAM" ] && TOTAL_RAM=1024
+FREE_DISK=$(df -m . 2>/dev/null | awk 'NR==2{print $4}')
+[ -z "$FREE_DISK" ] && FREE_DISK=1024
+
+if [ "$CPU_CORES" -le 2 ] || [ "$TOTAL_RAM" -le 1500 ]; then
+  HW_NIVEL="BAIXO"; THREADS=5
+  HW_COR=$YELLOW
+elif [ "$CPU_CORES" -le 4 ] || [ "$TOTAL_RAM" -le 3500 ]; then
+  HW_NIVEL="MEDIO"; THREADS=15
+  HW_COR=$YELLOW
+else
+  HW_NIVEL="ALTO"; THREADS=30
+  HW_COR=$GREEN
+fi
+
+# ============================================================
+# FUNCAO LOADING BAR
+# ============================================================
+loading_bar() {
+  local dur=${1:-3}; local msg=${2:-"Inicializando"}; local total=$((dur * 2))
+  for i in $(seq 1 $total); do
+    pct=$((i * 100 / total))
+    filled=$(printf "%${i}s" | tr ' ' '#')
+    empty=$(printf "%$((total - i))s")
+    printf "\r${CYAN}[${MAGENTA}${filled}${empty}${CYAN}] ${msg}... ${pct}%%${RESET}"
+    sleep 0.5
+  done
+  echo ""
+}
+
+# ============================================================
 # BANNER
 # ============================================================
 clear
@@ -132,6 +167,27 @@ if [ ${#ALVOS[@]} -eq 0 ]; then
   echo -e "${RED}Nenhuma URL informada. Abortando.${RESET}"
   exit 1
 fi
+
+# ============================================================
+# HARDWARE CHECK + LOADING
+# ============================================================
+clear
+echo -e "${CYAN}${BOLD}╔══════════════════════════════════════════════════╗${RESET}"
+echo -e "${CYAN}${BOLD}║        DIAGNOSTICO DE HARDWARE                  ║${RESET}"
+echo -e "${CYAN}${BOLD}╠══════════════════════════════════════════════════╣${RESET}"
+echo -e "${CYAN}${BOLD}║${RESET}  CPU: ${BOLD}${CPU_CORES} nucleos${RESET}"
+echo -e "${CYAN}${BOLD}║${RESET}  RAM: ${BOLD}${TOTAL_RAM} MB${RESET}"
+echo -e "${CYAN}${BOLD}║${RESET}  Disco: ${BOLD}${FREE_DISK} MB livres${RESET}"
+echo -e "${CYAN}${BOLD}║${RESET}  Desempenho: ${HW_COR}${BOLD}${HW_NIVEL}${RESET} (threads: $THREADS)"
+echo -e "${CYAN}${BOLD}║${RESET}"
+if [ "$HW_NIVEL" = "BAIXO" ]; then
+  echo -e "${CYAN}${BOLD}║${RESET}  ${YELLOW}AVISO: Hardware basico. Scans mais lentos.${RESET}"
+  echo -e "${CYAN}${BOLD}║${RESET}  ${YELLOW}Feche outros programas para melhor desempenho.${RESET}"
+fi
+echo -e "${CYAN}${BOLD}╚══════════════════════════════════════════════════╝${RESET}"
+echo ""
+loading_bar 3 "Preparando modulos"
+echo ""
 
 # ============================================================
 # VERIFICA E INSTALA FERRAMENTAS
@@ -291,6 +347,11 @@ if command -v nmap &>/dev/null; then
   nmap --top-ports 100 -T4 --open -sV "$DOMINIO" 2>/dev/null | grep -E '^[0-9]|PORT|SERVICE|VERSION' | head -30
   echo ""
   nmap -sV --script=http-title,http-server-header,http-headers "$DOMINIO" 2>/dev/null | grep -E 'title|Server|Header' | head -10
+else
+  info "Nmap nao disponivel - usando bash TCP scan basico"
+  for port in 21 22 23 25 53 80 110 143 443 445 993 995 1433 1521 2049 3306 3389 5432 5900 5985 5986 6379 8080 8443 9090 27017; do
+    timeout 2 bash -c "echo > /dev/tcp/$DOMINIO/$port" 2>/dev/null && echo -e "${GREEN}[ABERTA]${RESET} Porta $port" && critico "PORTA ABERTA: $DOMINIO:$port"
+  done
 fi
 
 # ===== PASSO 7: GOBUSTER =====
@@ -299,7 +360,7 @@ if command -v gobuster &>/dev/null; then
   WORDLIST="/usr/share/wordlists/dirbuster/directory-list-2.3-medium.txt"
   [ ! -f "$WORDLIST" ] && WORDLIST="/usr/share/wordlists/dirb/common.txt"
   if [ -f "$WORDLIST" ]; then
-    gobuster dir -u "$ALVO" -w "$WORDLIST" -t 30 -q -s 200,301,302,403,401 -x php,txt,html,bak,zip,tar,sql,json,xml 2>/dev/null | head -50
+    gobuster dir -u "$ALVO" -w "$WORDLIST" -t "$THREADS" -q -s 200,301,302,403,401 -x php,txt,html,bak,zip,tar,sql,json,xml 2>/dev/null | head -50
   fi
 fi
 
@@ -385,7 +446,7 @@ progresso "FFUF - Forca bruta de diretorios"
 if command -v ffuf &>/dev/null; then
   WL="/usr/share/wordlists/dirb/common.txt"
   if [ -f "$WL" ]; then
-    ffuf -u "$ALVO/FUZZ" -w "$WL" -t 30 -c -s -fc 404,403 2>/dev/null | head -40
+    ffuf -u "$ALVO/FUZZ" -w "$WL" -t "$THREADS" -c -s -fc 404,403 2>/dev/null | head -40
   fi
 fi
 
@@ -556,6 +617,11 @@ use auxiliary/scanner/http/options
 set RHOSTS $DOMINIO
 set RPORT $PORTA
 set THREADS 20
+run
+
+use auxiliary/scanner/http/robots_txt
+set RHOSTS $DOMINIO
+set RPORT $PORTA
 run
 
 use auxiliary/scanner/http/http_header
@@ -737,12 +803,24 @@ fi
 
 # --- CVSS SIMULADO ---
 CVSS_STRING="CVSS:3.1/AV:N/AC:L"
-[ "$sql_detect" -gt 0 ] || [ "$traversal_detect" -gt 0 ] && CVSS_STRING="${CVSS_STRING}/PR:N/UI:N"
-[ "$creds_detect" -gt 0 ] && CVSS_STRING="${CVSS_STRING}/PR:L"
-[ "$xss_detect" -gt 0 ] && CVSS_STRING="${CVSS_STRING}/UI:R"
-[ "$RAW_SCORE" -ge 75 ] && CVSS_STRING="${CVSS_STRING}/S:C/C:H/I:H/A:H"
-[ "$RAW_SCORE" -ge 50 ] && [ "$RAW_SCORE" -lt 75 ] && CVSS_STRING="${CVSS_STRING}/S:U/C:H/I:L/A:L"
-[ "$RAW_SCORE" -lt 50 ] && CVSS_STRING="${CVSS_STRING}/S:U/C:L/I:L/A:N"
+if [ "$sql_detect" -gt 0 ] || [ "$traversal_detect" -gt 0 ]; then
+  CVSS_STRING="${CVSS_STRING}/PR:N/UI:N"
+elif [ "$creds_detect" -gt 0 ] && [ "$xss_detect" -gt 0 ]; then
+  CVSS_STRING="${CVSS_STRING}/PR:L/UI:R"
+elif [ "$creds_detect" -gt 0 ]; then
+  CVSS_STRING="${CVSS_STRING}/PR:L/UI:N"
+elif [ "$xss_detect" -gt 0 ]; then
+  CVSS_STRING="${CVSS_STRING}/PR:N/UI:R"
+else
+  CVSS_STRING="${CVSS_STRING}/PR:N/UI:N"
+fi
+if [ "$RAW_SCORE" -ge 75 ]; then
+  CVSS_STRING="${CVSS_STRING}/S:C/C:H/I:H/A:H"
+elif [ "$RAW_SCORE" -ge 50 ]; then
+  CVSS_STRING="${CVSS_STRING}/S:U/C:H/I:L/A:L"
+else
+  CVSS_STRING="${CVSS_STRING}/S:U/C:L/I:L/A:N"
+fi
 CVSS_SCORE=$(echo "scale=1; $RAW_SCORE * 10 / 100" | bc 2>/dev/null)
 [ -z "$CVSS_SCORE" ] && CVSS_SCORE="N/A"
 
@@ -799,6 +877,18 @@ echo -e "${IA_COR}${BOLD}║${RESET}"
 [ -n "$FASE1" ] && { echo -e "${IA_COR}${BOLD}║${RESET}  ${RED}Fase 1 - $FASE1${RESET}"; }
 [ -n "$FASE2" ] && { echo -e "${IA_COR}${BOLD}║${RESET}  ${YELLOW}Fase 2 - $FASE2${RESET}"; }
 [ -n "$FASE3" ] && { echo -e "${IA_COR}${BOLD}║${RESET}  ${CYAN}Fase 3 - $FASE3${RESET}"; }
+echo -e "${IA_COR}${BOLD}║${RESET}"
+# --- SUPERFICIE DE ATAQUE ---
+SURFACE_PORTS=$(echo "$REPORT_TEXT" | grep -cE "PORTA ABERTA|SERVICO ENCONTRADO")
+SURFACE_PATH=$(echo "$REPORT_TEXT" | grep -cE "ACESSO LIVRE|DIRETORIO|BACKUP|CONFIG EXPOSTO|INFO PHP|BACKUP WP-CONFIG|BACKUP BD|SERVICO ENCONTRADO")
+SURFACE_EXPLOIT=$(echo "$REPORT_TEXT" | grep -cE "SQL INJECTION|WEBSHELL|PUT|DEFAULT CREDENTIALS|REPOSITORIO GIT|ARQUIVO .ENV|PATH TRAVERSAL")
+SURFACE_TOTAL=$((SURFACE_PORTS * 2 + SURFACE_PATH * 3 + SURFACE_EXPLOIT * 5))
+[ "$SURFACE_TOTAL" -gt 100 ] && SURFACE_TOTAL=100
+SURFACE_BAR=$(printf "%$((SURFACE_TOTAL / 2))s" | tr ' ' '#')
+SURFACE_EMPTY=$(printf "%$((50 - SURFACE_TOTAL / 2))s")
+echo -e "${IA_COR}${BOLD}║${RESET}  ${BOLD}Superficie de ataque:${RESET}"
+echo -e "${IA_COR}${BOLD}║${RESET}    ${IA_COR}[${SURFACE_BAR}${SURFACE_EMPTY}]${RESET}"
+echo -e "${IA_COR}${BOLD}║${RESET}    Portas/servicos: ${CYAN}${SURFACE_PORTS}${RESET} | Paths expostos: ${CYAN}${SURFACE_PATH}${RESET} | Exploitaveis: ${CYAN}${SURFACE_EXPLOIT}${RESET}"
 echo -e "${IA_COR}${BOLD}║${RESET}"
 echo -e "${IA_COR}${BOLD}║${RESET}  ${BOLD}Confianca da analise:${RESET} ${IA_COR}$([ "$TOTAL_ACHADOS" -gt 0 ] && echo "Alta (${TOTAL_ACHADOS} achados processados)" || echo "Baixa (poucos dados)")${RESET}"
 echo -e "${IA_COR}${BOLD}╚══════════════════════════════════════════════════════════╝${RESET}"
