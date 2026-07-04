@@ -20,6 +20,45 @@ MAGENTA='\033[1;35m'
 RESET='\033[0m'
 BOLD='\033[1m'
 
+# ── SEGURANÇA: Ctrl+C só mata a ferramenta atual ──
+_CANCEL=""
+trap '_CANCEL="1"' SIGINT
+
+safe_run() {
+  local cmd="$1" label="${2:-comando}" timeout="${3:-120}"
+  local pid outfile
+  outfile=$(mktemp)
+  echo -e "${BLUE}[i] ${label} (timeout: ${timeout}s)${RESET}"
+  eval "$cmd" > "$outfile" 2>&1 &
+  pid=$!
+  local elapsed=0 last_out=0 last_warn=0
+  while kill -0 $pid 2>/dev/null; do
+    if [ -n "$_CANCEL" ]; then
+      echo -e "\n${YELLOW}[!] Cancelado: $label${RESET}"
+      kill $pid 2>/dev/null; wait $pid 2>/dev/null
+      _CANCEL=""; rm -f "$outfile"; return 1
+    fi
+    if [ -s "$outfile" ]; then
+      local mod=$(stat -c "%Y" "$outfile" 2>/dev/null || echo 0)
+      [ "$mod" -gt "$last_out" ] && last_out=$mod
+    fi
+    if [ "$elapsed" -gt "$last_warn" ] && [ "$elapsed" -ge 20 ] && [ "$((elapsed - last_out))" -gt 15 ]; then
+      echo -e "${YELLOW}[!] Sem output ha $((elapsed - last_out))s...${RESET}"
+      last_warn=$elapsed
+    fi
+    if [ "$elapsed" -ge "$timeout" ]; then
+      echo -e "${YELLOW}[!] Timeout (${timeout}s) - parando $label${RESET}"
+      kill $pid 2>/dev/null; wait $pid 2>/dev/null
+      rm -f "$outfile"; return 1
+    fi
+    sleep 1; elapsed=$((elapsed + 1))
+  done
+  wait $pid 2>/dev/null; local rc=$?
+  cat "$outfile"
+  rm -f "$outfile"
+  return $rc
+}
+
 # ============================================================
 # DETECCAO DE HARDWARE
 # ============================================================
@@ -1188,6 +1227,18 @@ elif [ "$TEC_WP" = "0" ]; then
   info "WPScan pulado - WordPress nao detectado"
 elif [ -z "$WHATWEB_OUT" ]; then
   info "WPScan pulado - WhatWeb nao executou (tecnologia do alvo desconhecida)"
+fi
+
+# Passo 15.5: Nuclei (templates CVE)
+progresso "Nuclei - Buscando CVEs" 2
+if [ "$WEB_ATIVO" = "1" ] && valida_ferramenta "nuclei"; then
+  safe_run "nuclei -u '$ALVO' -t cves,vulnerabilities -severity critical,high -nc -silent -c 20 2>/dev/null | head -20" "Nuclei" 90
+fi
+
+# Passo 15.6: HTTPX (probe rapido)
+progresso "HTTPX - Validando servicos" 1
+if [ "$WEB_ATIVO" = "1" ] && valida_ferramenta "httpx"; then
+  safe_run "httpx -u '$ALVO' -status-code -title -tech-detect -silent -threads 20 2>/dev/null | head -10" "HTTPX" 30
 fi
 
 # Passos 16-18 em paralelo (DNS/local)
