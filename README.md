@@ -1,6 +1,6 @@
 # DeepRecon 🔍
 
-Scanner de vulnerabilidades web completo com 24 passos automatizados.
+Scanner de vulnerabilidades web completo com **35 passos automatizados**, motor cognitivo IA, análise SSL (A-F), relatórios TXT/HTML/JSON, integração Metasploit e detecção de hardware adaptativa.
 
 ## Instalação
 
@@ -20,6 +20,14 @@ O menu interativo oferece 3 modos:
 - `[1]` Alvo único
 - `[2]` Múltiplos alvos
 - `[3]` Arquivo de alvos
+
+### Argumento direto
+
+```bash
+./deeprecon.sh https://alvo.com
+```
+
+Pula o menu interativo e inicia o scan imediatamente.
 
 ## Passos
 
@@ -46,17 +54,57 @@ O menu interativo oferece 3 modos:
 | 19 | Métodos HTTP | Verifica OPTIONS, PUT |
 | 20 | Serviços comuns | Procura phpMyAdmin, cgi-bin, etc |
 | 21 | CVE Check | Verifica versões antigas de servidores |
-| 22 | Exploração agressiva | XSS, path traversal, .git/.env expostos, CORS, default creds, SSTI, PUT webshell, open redirect |
-| 23 | Análise inteligente | Correlaciona achados e dá sugestões |
-| 24 | Informações do site | Servidor, Cloudflare, idade do domínio, SSL, IP, ASN |
+| 22 | Exploração agressiva | XSS, path traversal, .git/.env, CORS, default creds, SSTI, PUT webshell, open redirect |
+| 23 | Metasploit | 7 scanners auxiliares (http_header, robots_txt, git_scanner, etc) |
+| 24 | IA Brain | Motor cognitivo: narrativa, score, CVSS, quick wins, roadmap, superfície de ataque |
+| 25 | Info do site | Servidor, CDN, SSL, whois, idade do domínio, tecnologias |
+| 26 | Email Security | SPF, DMARC, DKIM, BIMI, MX records |
+| 27 | Robots/Security/Sitemap | Análise de robots.txt, security.txt, sitemap.xml |
+| 28 | SSL Grade (A-F) | Classificação SSL Labs style com pontos por TLS, HSTS, PFS, ciphers |
+| 29 | JWT Hunter | Busca tokens JWT em cookies, headers, HTML; analisa flags de segurança |
+| 30 | Traceroute | Mapeamento de rota de rede com hops e latência |
+| 31 | WAF Behavior | Teste de rate limiting e detecção de WAF com payloads maliciosos |
+| 32 | Tech CVE Lookup | Correlaciona versões de tecnologias com CVEs e searchsploit |
+| 33 | JSON Export | Gera relatório estruturado em JSON |
+| 34 | HTML Report | Relatório visual profissional com CSS e barra de risco |
+| 35 | Deep Ports | Escaneia portas incomuns (CPanel, Webmin, backdoors) |
 
-## Relatório
+## Relatórios
 
-O relatório completo é salvo em `/tmp/DeepRecon_<dominio>_<data>.txt`.
+Três formatos gerados automaticamente:
+
+- **TXT**: `/tmp/DeepRecon_<dominio>_<data>.txt` — relatório completo em texto
+- **HTML**: `/tmp/DeepRecon_<dominio>_<data>.html` — relatório visual com CSS profissional
+- **JSON**: `/tmp/DeepRecon_<dominio>_<data>.json` — relatório estruturado para integração
+
+### Visualizar relatórios
+
+```bash
+cat /tmp/DeepRecon_*.txt          # TXT
+firefox /tmp/DeepRecon_*.html     # HTML
+cat /tmp/DeepRecon_*.json | jq .  # JSON (requer jq)
+```
+
+## Funcionalidades
+
+- **35 passos automatizados** de reconhecimento e exploração
+- **IA Brain**: motor cognitivo com score, CVSS 3.1, cadeias de ataque, quick wins, roadmap de remediação
+- **Metasploit**: 7 scanners auxiliares integrados
+- **SSL Grade**: classificação A+ a F estilo SSL Labs
+- **Email Security**: SPF, DMARC, DKIM, BIMI
+- **JWT Hunter**: detecção de tokens expostos em cookies/headers/HTML
+- **HTML Report**: relatório visual profissional com CSS dark mode
+- **JSON Export**: saída estruturada para ferramentas externas
+- **Hardware Detection**: ajusta threads automaticamente (5/15/30) baseado em CPU/RAM
+- **Loading Bar**: barra de progresso visual com percentual
+- **Full scan**: 25 portas comuns + portas incomuns (35 adicionais)
+- **Argumento CLI**: `./deeprecon.sh <url>` para execução direta
 
 ## Requisitos
 
 - Kali Linux ou Debian-based
+- Conexão com internet
+- ~2GB de RAM recomendado (mínimo 512MB com modo BAIXO)
 - Ferramentas instaladas automaticamente pelo script (via apt)
 
 ## Aviso Legal
