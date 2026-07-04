@@ -938,7 +938,7 @@ fi
 
 # ===== PASSO 7: NMAP =====
 progresso "Nmap - Escaneando portas" 2
-PORTAS_ABERTAS=(); WEB_ATIVO=0
+PORTAS_ABERTAS=(); SERVICOS_HTTP=(); WEB_ATIVO=0
 if valida_ferramenta "nmap" && verificar_conexao "$ALVO"; then
   local nmap_rate=$([ "$RATE_LIMIT_MS" -ge 500 ] && echo 50 || [ "$RATE_LIMIT_MS" -ge 200 ] && echo 200 || echo 500)
   NMAP_RAW=$(nmap --top-ports 100 -T4 --max-retries 1 --min-rate "$nmap_rate" --open -sV "$DOMINIO" 2>/dev/null) || aviso "nmap scan de portas falhou"
@@ -947,7 +947,9 @@ if valida_ferramenta "nmap" && verificar_conexao "$ALVO"; then
   (nmap -sV --script=http-title,http-server-header,http-headers "$DOMINIO" 2>/dev/null || aviso "nmap scripts falhou") | grep -E 'title|Server|Header' | head -10
   while IFS= read -r line; do
     port=$(echo "$line" | cut -d/ -f1)
+    service=$(echo "$line" | awk '{for(i=3;i<=NF;i++) printf "%s ", $i}')
     [ -n "$port" ] && PORTAS_ABERTAS+=("$port")
+    [ -n "$service" ] && echo "$service" | grep -qiE "http|www|web|proxy|api|rest|soap|graphql|dashboard|admin" && { WEB_ATIVO=1; SERVICOS_HTTP+=("$port"); }
   done < <(echo "$NMAP_RAW" | grep "^[0-9]/tcp" | grep -v "^|")
 else
   info "Nmap nao disponivel - usando bash TCP scan basico"
@@ -958,10 +960,11 @@ else
     }
   done
 fi
-for pweb in 80 443 8080 8443; do
+# detecta servico web por nome OU por portas web comuns
+for pweb in 80 443 8080 8443 3000 5000 8000 8888 9000 9090 9443; do
   [[ " ${PORTAS_ABERTAS[*]} " =~ " $pweb " ]] && WEB_ATIVO=1
 done
-[ "$WEB_ATIVO" = "0" ] && aviso "Nenhuma porta web aberta - ferramentas web serao puladas"
+[ "$WEB_ATIVO" = "1" ] && info "Servico web ativo (portas: ${SERVICOS_HTTP[*]:-${PORTAS_ABERTAS[*]}})" || aviso "Nenhum servico web detectado - ferramentas web serao puladas"
 
 # ===== PASSO 8: GOBUSTER =====
 progresso "Gobuster - Descobrindo diretorios" 2
@@ -1013,19 +1016,20 @@ fi
 
 # ===== PASSO 10: SQLMAP =====
 progresso "SQLMap - Testando SQL Injection" 2
+SQLI_TIMEOUT=120
 if [ "$WEB_ATIVO" = "1" ] && valida_ferramenta "sqlmap"; then
   PARAM=$(curl_rapido "$ALVO" 2>/dev/null | grep -oP '(?<=\?)[a-z]+(?==)' | head -1)
   SQLI_ACHOU=0
   if [ -n "$PARAM" ]; then
-    info "Parametro GET: $PARAM"
-    SQLI_RESULT=$(sqlmap -u "${ALVO}?${PARAM}=1" --batch --level=2 --risk=2 --threads=5 --time-sec=2 --dbs 2>/dev/null || aviso "sqlmap GET falhou")
+    info "Parametro GET: $PARAM (timeout ${SQLI_TIMEOUT}s)"
+    SQLI_RESULT=$(timeout $SQLI_TIMEOUT sqlmap -u "${ALVO}?${PARAM}=1" --batch --level=2 --risk=2 --threads=5 --time-sec=2 --dbs 2>/dev/null || aviso "sqlmap GET falhou ou excedeu ${SQLI_TIMEOUT}s")
     echo "$SQLI_RESULT" | grep -qi "vulnerable" && critico "SQL INJECTION DETECTADA em ?$PARAM" && SQLI_ACHOU=1
   fi
-  SQLI_FORMS=$(sqlmap -u "$ALVO" --crawl=1 --batch --forms --level=2 --risk=2 --threads=5 --time-sec=2 2>/dev/null || aviso "sqlmap forms falhou")
+  SQLI_FORMS=$(timeout $SQLI_TIMEOUT sqlmap -u "$ALVO" --crawl=1 --batch --forms --level=2 --risk=2 --threads=5 --time-sec=2 2>/dev/null || aviso "sqlmap forms falhou ou excedeu ${SQLI_TIMEOUT}s")
   echo "$SQLI_FORMS" | grep -qi "vulnerable" && critico "SQL INJECTION DETECTADA em formulario!" && SQLI_ACHOU=1
   COOKIE=$(curl_rapido -I "$ALVO" 2>/dev/null | grep -i "^set-cookie:" | head -1 | sed 's/.*: //' | cut -d';' -f1)
   if [ -n "$COOKIE" ]; then
-    SQLI_COOKIE=$(sqlmap -u "$ALVO" --cookie="$COOKIE=1'" --batch --level=3 --risk=2 2>/dev/null || aviso "sqlmap cookie falhou")
+    SQLI_COOKIE=$(timeout $SQLI_TIMEOUT sqlmap -u "$ALVO" --cookie="$COOKIE=1'" --batch --level=3 --risk=2 2>/dev/null || aviso "sqlmap cookie falhou ou excedeu ${SQLI_TIMEOUT}s")
     echo "$SQLI_COOKIE" | grep -qi "vulnerable" && critico "SQL INJECTION DETECTADA em cookie!" && SQLI_ACHOU=1
   fi
   [ "$SQLI_ACHOU" -eq 0 ] && info "Nenhuma SQL Injection encontrada nos testes basicos"
@@ -1036,7 +1040,7 @@ progresso "Commix - Testando Command Injection" 2
 if [ "$WEB_ATIVO" = "1" ] && valida_ferramenta "commix"; then
   PARAM=$(curl_rapido "$ALVO" 2>/dev/null | grep -oP '(?<=\?)[a-z]+(?==)' | head -1)
   if [ -n "$PARAM" ]; then
-    commix --url="${ALVO}?${PARAM}=1" --batch --level=1 2>/dev/null | grep -iE "vulnerable|injection|Confidence|Payload" | head -10 || aviso "commix falhou"
+    timeout 90 commix --url="${ALVO}?${PARAM}=1" --batch --level=1 2>/dev/null | grep -iE "vulnerable|injection|Confidence|Payload" | head -10 || aviso "commix falhou ou excedeu 90s"
   fi
 fi
 

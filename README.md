@@ -117,7 +117,11 @@ cat /tmp/DeepRecon_*.json | jq .  # JSON (requer jq)
 - Em modo Furtivo, Gobuster, FFUF e WFuzz são **pulados automaticamente** — o delay de 1s entre requisições tornaria a varredura de wordlists (50k+ palavras) inviável (~14h).
 - O modo Furtivo foca apenas em reconhecimento passivo e testes leves.
 
-### 3. Correlação de Portas (ferramentas web só rodam se porta web estiver aberta)
+### 3. Correlação de Portas (ferramentas web detectam serviço por nome, não só por porta fixa)
+- Nmap extrai nome do serviço (`http`, `www`, `proxy`, `api`, `graphql`, `rest`, `dashboard`) via `-sV`
+- Portas web comuns ampliadas: 80, 443, 8080, 8443, **3000, 5000, 8000, 8888, 9000, 9090, 9443**
+- Se um servidor web rodar na porta 5000 ou 9000, `WEB_ATIVO=1` é ativado pelo nome do serviço OU pela porta
+- Fallback TCP bash scan também verifica todas as portas da lista ampliada
 - Nmap captura portas abertas em `PORTAS_ABERTAS[]`
 - `WEB_ATIVO=1` apenas se 80/443/8080/8443 estiverem abertas
 - Gobuster, SQLMap, Commix, FFUF, WFuzz, Nikto, WPScan, Hydra, Metasploit, XSS, path traversal, CORS, SSTI, PUT e demais testes HTTP só executam com `WEB_ATIVO=1`
@@ -127,7 +131,11 @@ cat /tmp/DeepRecon_*.json | jq .  # JSON (requer jq)
 - `verificar_versoes()` agora checa: Python 3, Go, Nmap (≥ 7.x), Ruby
 - Avisa se alguma ferramenta crítica estiver ausente ou desatualizada antes de começar o scan
 
-### 5. Threads Ajustadas pela Rede (não só CPU/RAM)
+### 5. SQLMap com timeout — não trava o script
+- Cada chamada do SQLMap (GET, forms, cookie) tem **timeout de 120s**
+- Commix com timeout de 90s
+- Se o SQLMap travar num formulário lento, os passos seguintes não ficam esperando para sempre
+- Script continua linear por arquitetura shell, mas timeouts evitam bloqueio permanente
 - Teste de latência contra 8.8.8.8 no startup
 - Rede lenta (>200ms): fator 0.3 — threads reduzidas para não saturar o Wi-Fi
 - Rede média (>80ms): fator 0.6
