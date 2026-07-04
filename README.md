@@ -1,6 +1,6 @@
 # DeepRecon 🔍
 
-Scanner de vulnerabilidades web completo com **35 passos automatizados**, score heurístico de risco (Joguin IA), análise SSL (A-F), relatórios TXT/HTML/JSON, integração Metasploit e detecção adaptativa de hardware/rede.
+Scanner de vulnerabilidades web completo com **42 passos automatizados**, score heurístico de risco (Joguin IA), análise SSL (A-F), relatórios TXT/HTML/JSON, integração Metasploit, menu de ataque pos-scan e detecção adaptativa de hardware/rede.
 
 ## Instalação
 
@@ -35,39 +35,46 @@ Pula o menu interativo e inicia o scan imediatamente.
 |---|-------|-----------|
 | 1 | WAFW00F | Detecta Web Application Firewall |
 | 2 | Headers | Analisa headers de segurança (HSTS, CSP, X-Frame-Options) |
-| 3 | WhatWeb | Identifica tecnologias do site |
+| 3 | WhatWeb | Identifica tecnologias do site (SPA, API, CMS) |
 | 4 | SSLScan | Verifica SSL/TLS, Heartbleed, validade do certificado |
 | 5 | Subfinder + Amass | Descobre subdomínios |
-| 6 | Nmap | Escaneia portas abertas e serviços |
-| 7 | Gobuster | Força bruta de diretórios |
-| 8 | Arquivos sensíveis | Procura admin, backup, .git, .env, phpinfo |
-| 9 | SQLMap | Testa SQL Injection (GET, forms, cookies) |
-| 10 | Commix | Testa Command Injection |
-| 11 | FFUF | Força bruta adicional de diretórios |
-| 12 | WFuzz | Fuzzing de parâmetros |
-| 13 | Nikto | Varredura geral de vulnerabilidades |
-| 14 | WPScan | Verifica WordPress |
-| 15 | Hydra | Testa senhas padrão |
-| 16 | DNSRecon | Informações de DNS |
-| 17 | Whois | Informações do domínio |
-| 18 | SearchSploit | Busca exploits conhecidos |
-| 19 | Métodos HTTP | Verifica OPTIONS, PUT |
-| 20 | Serviços comuns | Procura phpMyAdmin, cgi-bin, etc |
-| 21 | CVE Check | Verifica versões antigas de servidores |
-| 22 | Exploração agressiva | XSS, path traversal, .git/.env, CORS, default creds, SSTI, PUT webshell, open redirect |
-| 23 | Metasploit | 7 scanners auxiliares (http_header, robots_txt, git_scanner, etc) |
-| 24 | Joguin IA | Score heurístico: narrativa, score, CVSS, quick wins, roadmap, superfície de ataque |
-| 25 | Info do site | Servidor, CDN, SSL, whois, idade do domínio, tecnologias |
-| 26 | Email Security | SPF, DMARC, DKIM, BIMI, MX records |
-| 27 | Robots/Security/Sitemap | Análise de robots.txt, security.txt, sitemap.xml |
-| 28 | SSL Grade (A-F) | Classificação SSL Labs style com pontos por TLS, HSTS, PFS, ciphers |
-| 29 | JWT Hunter | Busca tokens JWT em cookies, headers, HTML; analisa flags de segurança |
-| 30 | Traceroute | Mapeamento de rota de rede com hops e latência |
-| 31 | WAF Behavior | Teste de rate limiting e detecção de WAF com payloads maliciosos |
-| 32 | Tech CVE Lookup | Correlaciona versões de tecnologias com CVEs e searchsploit |
-| 33 | JSON Export | Gera relatório estruturado em JSON |
-| 34 | HTML Report | Relatório visual profissional com CSS e barra de risco |
-| 35 | Deep Ports | Escaneia portas incomuns (CPanel, Webmin, backdoors) |
+| 6 | Gau + Wayback | Endpoints históricos (Wayback Machine, AlienVault) |
+| 7 | Katana | Crawler moderno de endpoints JS/SPA/API |
+| 8 | Nmap | Escaneia portas abertas e serviços |
+| 9 | Gobuster | Força bruta de diretórios |
+| 10 | Arquivos sensíveis | Procura admin, backup, .git, .env, phpinfo |
+| 11 | SQLMap | Testa SQL Injection (GET, forms, cookies) |
+| 12 | Commix | Testa Command Injection |
+| 13 | FFUF | Força bruta adicional de diretórios |
+| 14 | WFuzz | Fuzzing de parâmetros |
+| 15 | Nikto | Varredura geral de vulnerabilidades |
+| 16 | WPScan | Verifica WordPress |
+| 17 | Nuclei | Busca CVEs com templates atualizados |
+| 18 | HTTPX | Validação de status + tech detect |
+| 19 | Hydra | Testa senhas padrão |
+| 20 | DNSRecon | Informações de DNS |
+| 21 | Subdomain Takeover | Verifica CNAMEs para serviços cloud abandonados |
+| 22 | Whois | Informações do domínio |
+| 23 | SearchSploit | Busca exploits conhecidos |
+| 24 | Métodos HTTP | Verifica OPTIONS, PUT |
+| 25 | Serviços comuns | Procura phpMyAdmin, cgi-bin, etc |
+| 26 | CVE Check | Verifica versões antigas de servidores |
+| 27 | Exploração agressiva | XSS, path traversal, .git/.env, CORS, default creds, SSTI, PUT webshell, open redirect |
+| 28 | Dalfox | XSS automation (centenas de vetores) |
+| 29 | Cloud Storage | Testa S3, Azure Blob, Firebase, DigitalOcean Spaces |
+| 30 | Race Condition | Requests simultâneos em endpoints críticos |
+| 31 | GraphQL Introspection | Query __schema em endpoints GraphQL |
+| 32 | HTTP Smuggling | CL.TE request smuggling |
+| 33 | JS Secrets | Baixa JS, regexa por chaves API, tokens, senhas |
+| 34 | GoWitness | Screenshot visual do alvo |
+| 35 | CRLF Injection | Quebra de resposta HTTP com %0d%0a |
+| 36 | SSRF | Testa metadata cloud e localhost interno |
+| 37 | WebSocket Discovery | Varre endpoints WS/WSS comuns |
+| 38 | Metasploit | 7 scanners auxiliares (http_header, robots_txt, git_scanner, etc) |
+| 39 | Joguin IA | Score heurístico: narrativa, score, CVSS, quick wins, roadmap, superfície de ataque |
+| 40 | SSL Grade (A-F) | Classificação SSL Labs style com pontos por TLS, HSTS, PFS, ciphers |
+| 41 | JSON Export | Gera relatório estruturado em JSON |
+| 42 | HTML Report | Relatório visual profissional com CSS e barra de risco |
 
 ## Relatórios
 
@@ -87,7 +94,24 @@ cat /tmp/DeepRecon_*.json | jq .  # JSON (requer jq)
 
 ## Funcionalidades
 
-- **35 passos automatizados** de reconhecimento e exploração
+- **42 passos automatizados** de reconhecimento e exploração
+- **Menu de ataque pos-scan**: 10 ferramentas de invasão (Metasploit, SQLMap, Medusa, Ncrack, Ettercap, DDoS, Nmap custom, Bettercap, Hydra, hping3)
+- **Trap de segurança**: Ctrl+C só mata a ferramenta atual, não o script inteiro
+- **Safe run**: monitoramento de processo com timeout, detecção de idle e cancelamento controlado
+- **Gau + Wayback**: endpoints históricos de Archive.org, AlienVault
+- **Katana**: crawler moderno de SPA routes e endpoints dinâmicos
+- **Dalfox**: XSS automation com centenas de vetores
+- **Subdomain takeover**: verifica CNAMEs contra 17 serviços cloud (AWS, Azure, GitHub, Heroku)
+- **Cloud storage discovery**: S3, Azure Blob, Firebase, DigitalOcean Spaces
+- **GraphQL introspection**: descobre schema completo se exposto
+- **HTTP request smuggling**: CL.TE em portas 80/443/8080/8443
+- **JS secrets scanning**: regexa chaves API, tokens, senhas em scripts JS
+- **GoWitness**: screenshot visual do alvo
+- **CRLF injection**: teste de quebra de resposta HTTP
+- **SSRF**: teste de acesso a metadata cloud e localhost
+- **WebSocket discovery**: varre endpoints WS/WSS comuns
+- **Nuclei**: templates CVE atualizados pela comunidade
+- **Race condition**: requests simultâneos em endpoints críticos
 - **Joguin IA**: score heurístico de risco com CVSS 3.1, cadeias de ataque, quick wins, roadmap de remediação (não é LLM — sem alucinações)
 - **Metasploit**: 7 scanners auxiliares integrados
 - **SSL Grade**: classificação A+ a F estilo SSL Labs
@@ -95,6 +119,8 @@ cat /tmp/DeepRecon_*.json | jq .  # JSON (requer jq)
 - **JWT Hunter**: detecção de tokens expostos em cookies/headers/HTML
 - **HTML Report**: relatório visual profissional com CSS dark mode
 - **JSON Export**: saída estruturada para ferramentas externas
+- **Relatório pós-ataque**: exibe resultados completos após o menu de ataque
+- **Verificação de atualizações**: tela com spinner animado + auto-update
 - **Hardware Detection**: ajusta threads automaticamente (5/15/30) baseado em CPU/RAM
 - **Loading Bar**: barra de progresso visual com percentual
 - **Full scan**: 25 portas comuns + portas incomuns (35 adicionais)
