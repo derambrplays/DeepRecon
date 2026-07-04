@@ -1024,7 +1024,7 @@ fi
 progresso "Nmap - Escaneando portas" 2
 PORTAS_ABERTAS=(); SERVICOS_HTTP=(); WEB_ATIVO=0
 if valida_ferramenta "nmap" && verificar_conexao "$ALVO"; then
-  local nmap_rate=$([ "$RATE_LIMIT_MS" -ge 500 ] && echo 50 || [ "$RATE_LIMIT_MS" -ge 200 ] && echo 200 || echo 500)
+  nmap_rate=$([ "$RATE_LIMIT_MS" -ge 500 ] && echo 50 || [ "$RATE_LIMIT_MS" -ge 200 ] && echo 200 || echo 500)
   NMAP_RAW=$(nmap --top-ports 100 -T4 --max-retries 1 --min-rate "$nmap_rate" --open -sV "$DOMINIO" 2>/dev/null) || aviso "nmap scan de portas falhou"
   echo "$NMAP_RAW" | grep -E '^[0-9]|PORT|SERVICE|VERSION' | head -30
   echo ""
@@ -1159,7 +1159,7 @@ progresso "WFuzz - Fuzzing de parametros" 2
 if [ "$WEB_ATIVO" = "1" ] && [ "$MODO_SEGURO" != "1" ] && valida_ferramenta "wfuzz" && verificar_conexao "$ALVO"; then
   PARAM=$(curl_rapido "$ALVO" 2>/dev/null | grep -oP '(?<=\?)[a-z]+(?==)' | head -1)
   if [ -n "$PARAM" ]; then
-    local wl="/usr/share/wordlists/dirb/common.txt"
+    wl="/usr/share/wordlists/dirb/common.txt"
     [ "$MODO" = "furtivo" ] && wl=$(mini_wordlist) && info "Modo furtivo: wordlist mini"
     (wfuzz -c -z file,"$wl" -u "${ALVO}?FUZZ=1" --hc 404 2>/dev/null || aviso "wfuzz falhou") | head -15
   fi
@@ -1170,7 +1170,7 @@ fi
 progresso "Nikto - Varredura de vulnerabilidades" 2
 {
   if [ "$WEB_ATIVO" = "1" ] && valida_ferramenta "nikto" && verificar_conexao "$ALVO"; then
-    local nikto_opts="-timeout 10 -no404"
+    nikto_opts="-timeout 10 -no404"
     [ "$MODO_SEGURO" = "1" ] && nikto_opts="$nikto_opts -nointeractive -nossl"
     [ "$PROTOCOLO" = "https" ] && [ "$MODO_SEGURO" != "1" ] && nikto_opts="$nikto_opts -ssl"
     nikto -h "$ALVO" $nikto_opts 2>/dev/null | grep -iE "OSVDB|vulnerable|vuln|click|XSS|SQL|path|disclosure|error|backup|interesting|account|upload|exec|shell|injection" | head -30 || aviso "nikto falhou"
@@ -1182,7 +1182,7 @@ PID14=$!
 # Passo 15: WPScan (sequencial - depende de whatweb)
 progresso "WPScan - WordPress" 2
 if [ "$WEB_ATIVO" = "1" ] && [ "$TEC_WP" = "1" ] && [ -n "$WHATWEB_OUT" ] && valida_ferramenta "wpscan"; then
-  local wpscan_token="${WPSCAN_API_TOKEN:-}"
+  wpscan_token="${WPSCAN_API_TOKEN:-}"
   wpscan --url "$ALVO" --no-update ${wpscan_token:+--api-token "$wpscan_token"} 2>/dev/null | grep -iE "WordPress|theme|plugin|vulnerability|identified|User|admin" | head -15 || aviso "wpscan falhou"
 elif [ "$TEC_WP" = "0" ]; then
   info "WPScan pulado - WordPress nao detectado"
@@ -1617,7 +1617,7 @@ elif [ "$RAW_SCORE" -ge 50 ] && [ "$RAW_SCORE" -lt 75 ]; then
 else
   NARRATIVA="${NARRATIVA}Este alvo apresenta falhas GRAVES de seguranca que permitem acesso remoto "
   NARRATIVA="${NARRATIVA}nao autorizado ao servidor e aos dados. Um atacante pode: "
-  local first=1
+  first=1
   [ "$put_detect" -gt 0 ] && [ "$creds_detect" -gt 0 ] && {
     NARRATIVA="${NARRATIVA}(1) obter acesso administrativo com credenciais padrao, (2) fazer upload de webshell via PUT, "
     NARRATIVA="${NARRATIVA}(3) executar comandos no servidor como root"
@@ -1951,7 +1951,7 @@ JSON_FILE="${REPORT%.txt}.json"
 
 # ===== PASSO 32: RELATORIO HTML =====
 progresso "Gerando relatorio HTML" 1
-gerar_html_report
+gerar_html_report "$REPORT" "${REPORT%.txt}.html" "$ALVO" "$DOMINIO" "$(date '+%d/%m/%Y %H:%M:%S')"
 
 # ===== PASSO 33: PORTAS ADICIONAIS (TOP 1000) =====
 progresso "Escaneando portas adicionais (top 1000)" 3
