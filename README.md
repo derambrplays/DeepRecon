@@ -100,6 +100,37 @@ cat /tmp/DeepRecon_*.json | jq .  # JSON (requer jq)
 - **Full scan**: 25 portas comuns + portas incomuns (35 adicionais)
 - **Argumento CLI**: `./deeprecon.sh <url>` para execução direta
 
+## Problemas Resolvidos
+
+### 1. Rate Limiting Global (evita DoS, EDoS e travamento da rede)
+- Delay entre requisições configurável por modo (Furtivo=1000ms, Medio=300ms, Bruto=100ms)
+- Threads das ferramentas (Gobuster, FFUF) limitadas pelo rate limit
+- Nmap com `--min-rate` reduzido (50/200/500) em vez de 1000 fixo
+- Modo Furtivo usa delay de 1s entre requisições — seguro para qualquer roteador
+- `curl_rapido` com controle de taxa embutido
+
+### 2. Correlação de Portas (ferramentas web só rodam se porta web estiver aberta)
+- Nmap captura portas abertas em `PORTAS_ABERTAS[]`
+- `WEB_ATIVO=1` apenas se 80/443/8080/8443 estiverem abertas
+- Gobuster, SQLMap, Commix, FFUF, WFuzz, Nikto, WPScan, Hydra, Metasploit, XSS, path traversal, CORS, SSTI, PUT e demais testes HTTP só executam com `WEB_ATIVO=1`
+- Evita centenas de erros e minutos perdidos contra portas fechadas
+
+### 3. Detecção de Nuvem + Alerta EDoS
+- Identifica Cloudflare, AWS CloudFront, Google Cloud, Akamai, Incapsula via headers
+- Alerta sobre risco de cobrança financeira por auto-scaling (Economic Denial of Sustainability)
+- Em modo Bruto, pergunta se deseja continuar antes de prosseguir
+
+### 4. Suporte a .env para API Keys
+- Carrega automaticamente `$SCRIPT_DIR/.env` ou `~/.config/deeprecon/.env`
+- WPScan usa `WPSCAN_API_TOKEN` do `.env` no `--api-token`
+- `.env.example` incluso com documentação das chaves suportadas
+- `.env` e `reports/` no `.gitignore` — sem risco de vazar chaves no repositório
+
+### 5. Correções Gerais
+- Bug de sintaxe corrigido: heredoc duplo substituído por template com placeholders + `sed`
+- Nmap `else` ausente: "Nmap não disponível" agora só aparece quando nmap realmente não está instalado
+- `bash -n` limpo em todas as versões
+
 ## Requisitos
 
 - Kali Linux ou Debian-based

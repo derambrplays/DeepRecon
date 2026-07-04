@@ -1,0 +1,4 @@
+.env
+reports/
+*.trim
+/tmp/.deeprecon_*
