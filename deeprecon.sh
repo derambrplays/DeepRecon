@@ -39,7 +39,16 @@ SCRIPT_DIR=$(dirname "$(realpath "$0" 2>/dev/null || readlink -f "$0" 2>/dev/nul
 carregar_env() {
   local envs="$SCRIPT_DIR/.env $HOME/.config/deeprecon/.env"
   for envf in $envs; do
-    [ -f "$envf" ] && { set -a; source "$envf"; set +a; info "API keys carregadas de $envf"; return 0; }
+    [ -f "$envf" ] && {
+      local perm=$(stat -c "%a" "$envf" 2>/dev/null)
+      if [ -n "$perm" ] && [ "$perm" != "600" ] && [ "$perm" != "400" ] && [ "$perm" != "440" ]; then
+        aviso ".env com permissoes $perm (acessivel a outros usuarios) - ajustando para 600"
+        chmod 600 "$envf" 2>/dev/null
+      elif [ "$perm" = "600" ] || [ "$perm" = "400" ]; then
+        info ".env com permissoes seguras ($perm)"
+      fi
+      set -a; source "$envf"; set +a; info "API keys carregadas de $envf"; return 0
+    }
   done
   [ -f "$SCRIPT_DIR/.env.example" ] && aviso "Crie $SCRIPT_DIR/.env a partir de .env.example para API keys"
   return 0
@@ -299,9 +308,14 @@ job_aguarda_todos() {
 MAX_OUTPUT_BYTES=51200
 limpar_temporarios() {
   rm -f /tmp/.deeprecon_* 2>/dev/null
-  find /tmp -name "DeepRecon_*.txt" -mtime +1 -delete 2>/dev/null
-  find /tmp -name "DeepRecon_*.json" -mtime +1 -delete 2>/dev/null
-  find /tmp -name "DeepRecon_*.html" -mtime +1 -delete 2>/dev/null
+  find /tmp -name "DeepRecon_*" -mtime +1 -delete 2>/dev/null
+  local rdir="$SCRIPT_DIR/reports"
+  [ -d "$rdir" ] && {
+    find "$rdir" -name "*.txt" -mtime +7 -delete 2>/dev/null
+    find "$rdir" -name "*.json" -mtime +7 -delete 2>/dev/null
+    find "$rdir" -name "*.html" -mtime +7 -delete 2>/dev/null
+    find "$rdir" -type d -empty -mtime +1 -delete 2>/dev/null
+  }
 }
 
 # Fix 6: Validacao de escopo
@@ -337,6 +351,65 @@ detectar_spa() {
       [ "$api_code" != "000" ] && [ "$api_code" != "404" ] && TEC_API=1 && info "  API endpoint: /$api_path (HTTP $api_code)"
     done
   fi
+}
+
+# Wordlist mini (~50 paths) para modo furtivo
+mini_wordlist() {
+  local wl="/tmp/.deeprecon_mini_wordlist.txt"
+  [ -f "$wl" ] && { echo "$wl"; return; }
+  cat > "$wl" << 'WLEOF'
+admin
+login
+dashboard
+wp-admin
+wp-login.php
+administrator
+api
+v1
+v2
+api/v1
+api/v2
+graphql
+rest
+swagger
+openapi.json
+.git
+.env
+.htaccess
+config
+backup
+db.sql
+dump.sql
+phpinfo.php
+info.php
+robots.txt
+sitemap.xml
+crossdomain.xml
+xmlrpc.php
+wp-config.php.bak
+server-status
+server-info
+cgi-bin
+phpMyAdmin
+adminer.php
+uploads
+images
+assets
+static
+css
+js
+index.php
+index.html
+test.php
+debug.php
+private
+secret
+hidden
+painel
+console
+manager
+WLEOF
+  echo "$wl"
 }
 
 
@@ -761,7 +834,9 @@ PORTA=$(echo "$ALVO" | sed 's|https\?://||' | cut -d/ -f1 | grep -o ':[0-9]*$' |
 [ -z "$PORTA" ] && [ "$PROTOCOLO" = "https" ] && PORTA=443
 [ -z "$PORTA" ] && PORTA=80
 PROTOCOLO=$(echo "$ALVO" | grep -q 'https' && echo "https" || echo "http")
-REPORT="/tmp/DeepRecon_${DOMINIO}_$(date +%Y%m%d_%H%M%S).txt"
+REPORT_DIR="$SCRIPT_DIR/reports/$(date +%Y%m%d)"
+mkdir -p "$REPORT_DIR" 2>/dev/null || REPORT_DIR="/tmp"
+REPORT="$REPORT_DIR/DeepRecon_${DOMINIO}_$(date +%Y%m%d_%H%M%S).txt"
 > "$REPORT"
 
 TOTAL_PASSOS=35
@@ -774,13 +849,22 @@ TEC_PHP=0 TEC_ASP=0 TEC_PYTHON=0 TEC_NODE=0 TEC_JAVA=0
 TEC_LOGIN=0 TEC_PARAM=0 TEC_FORM=0 TEC_UPLOAD=0 TEC_NOME=""
 WHATWEB_OUT=""
 
-# instala ferramenta sob demanda
+# instala ferramenta sob demanda (com seguranca e consentimento)
+INSTALL_AUTO="${INSTALL_AUTO:-0}"
 instalar_se_precisar() {
   local cmd="$1" pkg="${2:-$1}"
   command -v "$cmd" &>/dev/null && return 0
-  echo -e "  ${YELLOW}[!] $cmd nao encontrado. Instalando...${RESET}"
-  sudo apt-get install -y -qq "$pkg" 2>/dev/null && command -v "$cmd" &>/dev/null && echo -e "  ${GREEN}[+] $cmd instalado${RESET}" && return 0
-  pip3 install "$cmd" 2>/dev/null && command -v "$cmd" &>/dev/null && echo -e "  ${GREEN}[+] $cmd via pip3${RESET}" && return 0
+  echo -e "  ${YELLOW}[!] $cmd nao encontrado.${RESET}"
+  echo -e "  ${YELLOW}AVISO: Instalacao altera pacotes do sistema via apt.${RESET}"
+  echo -e "  ${YELLOW}Risco de conflito com dependencias existentes.${RESET}"
+  if [ "$INSTALL_AUTO" != "1" ]; then
+    echo -ne "  ${YELLOW}Instalar $pkg? (s/N/a=tudo): ${RESET}"; read -r inst_resp
+    [[ "$inst_resp" = "a" || "$inst_resp" = "A" ]] && INSTALL_AUTO=1
+    [[ "$inst_resp" != "s" && "$inst_resp" != "S" && "$INSTALL_AUTO" != "1" ]] && { aviso "$cmd nao instalado - pulando passo"; return 1; }
+  fi
+  echo -e "  ${YELLOW}Instalando $pkg (com --no-install-recommends)...${RESET}"
+  sudo apt-get install -y --no-install-recommends -qq "$pkg" 2>/dev/null && command -v "$cmd" &>/dev/null && echo -e "  ${GREEN}[+] $cmd instalado${RESET}" && return 0
+  pip3 install --user "$cmd" 2>/dev/null && command -v "$cmd" &>/dev/null && echo -e "  ${GREEN}[+] $cmd via pip3${RESET}" && return 0
   echo -e "  ${RED}[!!] Falha ao instalar $cmd${RESET}"; return 1
 }
 
@@ -968,9 +1052,14 @@ done
 
 # ===== PASSO 8: GOBUSTER =====
 progresso "Gobuster - Descobrindo diretorios" 2
-if [ "$WEB_ATIVO" = "1" ] && [ "$MODO" != "furtivo" ] && valida_ferramenta "gobuster" && verificar_conexao "$ALVO"; then
-  WORDLIST="/usr/share/wordlists/dirbuster/directory-list-2.3-medium.txt"
-  [ ! -f "$WORDLIST" ] && WORDLIST="/usr/share/wordlists/dirb/common.txt"
+if [ "$WEB_ATIVO" = "1" ] && valida_ferramenta "gobuster" && verificar_conexao "$ALVO"; then
+  if [ "$MODO" = "furtivo" ]; then
+    WORDLIST=$(mini_wordlist)
+    info "Modo furtivo: wordlist mini (50 paths)"
+  else
+    WORDLIST="/usr/share/wordlists/dirbuster/directory-list-2.3-medium.txt"
+    [ ! -f "$WORDLIST" ] && WORDLIST="/usr/share/wordlists/dirb/common.txt"
+  fi
   if [ -f "$WORDLIST" ]; then
     (gobuster dir -u "$ALVO" -w "$WORDLIST" -t "$TOOL_THREADS" -q -s 200,301,302,403,401 -x php,txt,html,bak,zip,tar,sql,json,xml 2>/dev/null || aviso "gobuster falhou") | head -50
   fi
@@ -1014,67 +1103,83 @@ else
   aviso "Pulando arquivos sensiveis (sem porta web)"
 fi
 
-# ===== PASSO 10: SQLMAP =====
+# ===== PASSOS 10+11+14+16+17+18 EM PARALELO =====
+PAR_DIR=$(mktemp -d /tmp/.deeprecon_par_XXXX)
+
 progresso "SQLMap - Testando SQL Injection" 2
-SQLI_TIMEOUT=120
-if [ "$WEB_ATIVO" = "1" ] && valida_ferramenta "sqlmap"; then
-  PARAM=$(curl_rapido "$ALVO" 2>/dev/null | grep -oP '(?<=\?)[a-z]+(?==)' | head -1)
-  SQLI_ACHOU=0
-  if [ -n "$PARAM" ]; then
-    info "Parametro GET: $PARAM (timeout ${SQLI_TIMEOUT}s)"
-    SQLI_RESULT=$(timeout $SQLI_TIMEOUT sqlmap -u "${ALVO}?${PARAM}=1" --batch --level=2 --risk=2 --threads=5 --time-sec=2 --dbs 2>/dev/null || aviso "sqlmap GET falhou ou excedeu ${SQLI_TIMEOUT}s")
-    echo "$SQLI_RESULT" | grep -qi "vulnerable" && critico "SQL INJECTION DETECTADA em ?$PARAM" && SQLI_ACHOU=1
+{
+  SQLI_TIMEOUT=120
+  if [ "$WEB_ATIVO" = "1" ] && valida_ferramenta "sqlmap"; then
+    PARAM=$(curl_rapido "$ALVO" 2>/dev/null | grep -oP '(?<=\?)[a-z]+(?==)' | head -1)
+    SQLI_ACHOU=0
+    if [ -n "$PARAM" ]; then
+      info "Parametro GET: $PARAM (timeout ${SQLI_TIMEOUT}s)"
+      SQLI_RESULT=$(timeout $SQLI_TIMEOUT sqlmap -u "${ALVO}?${PARAM}=1" --batch --level=2 --risk=2 --threads=5 --time-sec=2 --dbs 2>/dev/null || aviso "sqlmap GET falhou ou excedeu ${SQLI_TIMEOUT}s")
+      echo "$SQLI_RESULT" | grep -qi "vulnerable" && critico "SQL INJECTION DETECTADA em ?$PARAM" && SQLI_ACHOU=1
+    fi
+    SQLI_FORMS=$(timeout $SQLI_TIMEOUT sqlmap -u "$ALVO" --crawl=1 --batch --forms --level=2 --risk=2 --threads=5 --time-sec=2 2>/dev/null || aviso "sqlmap forms falhou ou excedeu ${SQLI_TIMEOUT}s")
+    echo "$SQLI_FORMS" | grep -qi "vulnerable" && critico "SQL INJECTION DETECTADA em formulario!" && SQLI_ACHOU=1
+    COOKIE=$(curl_rapido -I "$ALVO" 2>/dev/null | grep -i "^set-cookie:" | head -1 | sed 's/.*: //' | cut -d';' -f1)
+    if [ -n "$COOKIE" ]; then
+      SQLI_COOKIE=$(timeout $SQLI_TIMEOUT sqlmap -u "$ALVO" --cookie="$COOKIE=1'" --batch --level=3 --risk=2 2>/dev/null || aviso "sqlmap cookie falhou ou excedeu ${SQLI_TIMEOUT}s")
+      echo "$SQLI_COOKIE" | grep -qi "vulnerable" && critico "SQL INJECTION DETECTADA em cookie!" && SQLI_ACHOU=1
+    fi
+    [ "$SQLI_ACHOU" -eq 0 ] && info "Nenhuma SQL Injection encontrada nos testes basicos"
   fi
-  SQLI_FORMS=$(timeout $SQLI_TIMEOUT sqlmap -u "$ALVO" --crawl=1 --batch --forms --level=2 --risk=2 --threads=5 --time-sec=2 2>/dev/null || aviso "sqlmap forms falhou ou excedeu ${SQLI_TIMEOUT}s")
-  echo "$SQLI_FORMS" | grep -qi "vulnerable" && critico "SQL INJECTION DETECTADA em formulario!" && SQLI_ACHOU=1
-  COOKIE=$(curl_rapido -I "$ALVO" 2>/dev/null | grep -i "^set-cookie:" | head -1 | sed 's/.*: //' | cut -d';' -f1)
-  if [ -n "$COOKIE" ]; then
-    SQLI_COOKIE=$(timeout $SQLI_TIMEOUT sqlmap -u "$ALVO" --cookie="$COOKIE=1'" --batch --level=3 --risk=2 2>/dev/null || aviso "sqlmap cookie falhou ou excedeu ${SQLI_TIMEOUT}s")
-    echo "$SQLI_COOKIE" | grep -qi "vulnerable" && critico "SQL INJECTION DETECTADA em cookie!" && SQLI_ACHOU=1
-  fi
-  [ "$SQLI_ACHOU" -eq 0 ] && info "Nenhuma SQL Injection encontrada nos testes basicos"
-fi
+} > "$PAR_DIR/10.out" 2>&1 &
+PID10=$!
 
-# ===== PASSO 11: COMMIX =====
 progresso "Commix - Testando Command Injection" 2
-if [ "$WEB_ATIVO" = "1" ] && valida_ferramenta "commix"; then
-  PARAM=$(curl_rapido "$ALVO" 2>/dev/null | grep -oP '(?<=\?)[a-z]+(?==)' | head -1)
-  if [ -n "$PARAM" ]; then
-    timeout 90 commix --url="${ALVO}?${PARAM}=1" --batch --level=1 2>/dev/null | grep -iE "vulnerable|injection|Confidence|Payload" | head -10 || aviso "commix falhou ou excedeu 90s"
+{
+  if [ "$WEB_ATIVO" = "1" ] && valida_ferramenta "commix"; then
+    PARAM=$(curl_rapido "$ALVO" 2>/dev/null | grep -oP '(?<=\?)[a-z]+(?==)' | head -1)
+    if [ -n "$PARAM" ]; then
+      timeout 90 commix --url="${ALVO}?${PARAM}=1" --batch --level=1 2>/dev/null | grep -iE "vulnerable|injection|Confidence|Payload" | head -10 || aviso "commix falhou ou excedeu 90s"
+    fi
   fi
-fi
+} > "$PAR_DIR/11.out" 2>&1 &
+PID11=$!
 
-# ===== PASSO 12: FFUF =====
+# Passo 12: FFUF (sequencial - rapido)
 progresso "FFUF - Forca bruta de diretorios" 2
-if [ "$WEB_ATIVO" = "1" ] && [ "$MODO" != "furtivo" ] && valida_ferramenta "ffuf" && verificar_conexao "$ALVO"; then
-  WL="/usr/share/wordlists/dirb/common.txt"
+if [ "$WEB_ATIVO" = "1" ] && valida_ferramenta "ffuf" && verificar_conexao "$ALVO"; then
+  if [ "$MODO" = "furtivo" ]; then
+    WL=$(mini_wordlist)
+    info "Modo furtivo: wordlist mini (50 paths)"
+  else
+    WL="/usr/share/wordlists/dirb/common.txt"
+  fi
   if [ -f "$WL" ]; then
     (ffuf -u "$ALVO/FUZZ" -w "$WL" -t "$TOOL_THREADS" -c -s -fc 404,403 2>/dev/null || aviso "ffuf falhou") | head -40
   fi
 fi
 
-# ===== PASSO 13: WFUZZ =====
+# Passo 13: WFuzz (sequencial - rapido)
 progresso "WFuzz - Fuzzing de parametros" 2
-if [ "$WEB_ATIVO" = "1" ] && [ "$MODO" != "furtivo" ] && [ "$MODO_SEGURO" != "1" ] && valida_ferramenta "wfuzz" && verificar_conexao "$ALVO"; then
+if [ "$WEB_ATIVO" = "1" ] && [ "$MODO_SEGURO" != "1" ] && valida_ferramenta "wfuzz" && verificar_conexao "$ALVO"; then
   PARAM=$(curl_rapido "$ALVO" 2>/dev/null | grep -oP '(?<=\?)[a-z]+(?==)' | head -1)
   if [ -n "$PARAM" ]; then
-    (wfuzz -c -z file,/usr/share/wordlists/dirb/common.txt -u "${ALVO}?FUZZ=1" --hc 404 2>/dev/null || aviso "wfuzz falhou") | head -15
+    local wl="/usr/share/wordlists/dirb/common.txt"
+    [ "$MODO" = "furtivo" ] && wl=$(mini_wordlist) && info "Modo furtivo: wordlist mini"
+    (wfuzz -c -z file,"$wl" -u "${ALVO}?FUZZ=1" --hc 404 2>/dev/null || aviso "wfuzz falhou") | head -15
   fi
 else
   [ "$MODO_SEGURO" = "1" ] && info "WFuzz pulado pelo modo seguro"
 fi
 
-# ===== PASSO 14: NIKTO =====
 progresso "Nikto - Varredura de vulnerabilidades" 2
-if [ "$WEB_ATIVO" = "1" ] && valida_ferramenta "nikto" && verificar_conexao "$ALVO"; then
-  local nikto_opts="-timeout 10 -no404"
-  [ "$MODO_SEGURO" = "1" ] && nikto_opts="$nikto_opts -nointeractive -nossl"
-  [ "$PROTOCOLO" = "https" ] && [ "$MODO_SEGURO" != "1" ] && nikto_opts="$nikto_opts -ssl"
-  nikto -h "$ALVO" $nikto_opts 2>/dev/null | grep -iE "OSVDB|vulnerable|vuln|click|XSS|SQL|path|disclosure|error|backup|interesting|account|upload|exec|shell|injection" | head -30 || aviso "nikto falhou"
-  [ "$MODO_SEGURO" = "1" ] && aviso "Nikto em modo seguro - sem teste SSL, sem interacao com forms"
-fi
+{
+  if [ "$WEB_ATIVO" = "1" ] && valida_ferramenta "nikto" && verificar_conexao "$ALVO"; then
+    local nikto_opts="-timeout 10 -no404"
+    [ "$MODO_SEGURO" = "1" ] && nikto_opts="$nikto_opts -nointeractive -nossl"
+    [ "$PROTOCOLO" = "https" ] && [ "$MODO_SEGURO" != "1" ] && nikto_opts="$nikto_opts -ssl"
+    nikto -h "$ALVO" $nikto_opts 2>/dev/null | grep -iE "OSVDB|vulnerable|vuln|click|XSS|SQL|path|disclosure|error|backup|interesting|account|upload|exec|shell|injection" | head -30 || aviso "nikto falhou"
+    [ "$MODO_SEGURO" = "1" ] && aviso "Nikto em modo seguro - sem teste SSL, sem interacao com forms"
+  fi
+} > "$PAR_DIR/14.out" 2>&1 &
+PID14=$!
 
-# ===== PASSO 15: WPSCAN =====
+# Passo 15: WPScan (sequencial - depende de whatweb)
 progresso "WPScan - WordPress" 2
 if [ "$WEB_ATIVO" = "1" ] && [ "$TEC_WP" = "1" ] && [ -n "$WHATWEB_OUT" ] && valida_ferramenta "wpscan"; then
   local wpscan_token="${WPSCAN_API_TOKEN:-}"
@@ -1085,32 +1190,51 @@ elif [ -z "$WHATWEB_OUT" ]; then
   info "WPScan pulado - WhatWeb nao executou (tecnologia do alvo desconhecida)"
 fi
 
-# ===== PASSO 16: HYDRA =====
+# Passos 16-18 em paralelo (DNS/local)
 progresso "Hydra - Testando senhas (admin)" 2
-if [ "$WEB_ATIVO" = "1" ] && valida_ferramenta "hydra"; then
-  if echo "$ALVO" | grep -qE 'login|admin|painel'; then
-    hydra -t 4 -w 3 -l admin -P /usr/share/wordlists/fasttrack.txt "$DOMINIO" http-get / 2>/dev/null | head -10 || aviso "hydra falhou"
+{
+  if [ "$WEB_ATIVO" = "1" ] && valida_ferramenta "hydra"; then
+    if echo "$ALVO" | grep -qE 'login|admin|painel'; then
+      hydra -t 4 -w 3 -l admin -P /usr/share/wordlists/fasttrack.txt "$DOMINIO" http-get / 2>/dev/null | head -10 || aviso "hydra falhou"
+    fi
   fi
-fi
+} > "$PAR_DIR/16hydra.out" 2>&1 &
+PID16H=$!
 
-# ===== PASSO 16: DNSRECON =====
 progresso "DNSRecon - Info DNS" 2
-if valida_ferramenta "dnsrecon"; then
-  dnsrecon -d "$DOMINIO" 2>/dev/null | grep -iE "A |AAAA|MX|NS|SOA|TXT" | head -15 || aviso "dnsrecon falhou"
-fi
+{
+  if valida_ferramenta "dnsrecon"; then
+    dnsrecon -d "$DOMINIO" 2>/dev/null | grep -iE "A |AAAA|MX|NS|SOA|TXT" | head -15 || aviso "dnsrecon falhou"
+  fi
+} > "$PAR_DIR/16.out" 2>&1 &
+PID16=$!
 
-# ===== PASSO 17: WHOIS =====
 progresso "Whois - Info do dominio" 2
-if valida_ferramenta "whois"; then
-  whois "$DOMINIO" 2>/dev/null | grep -iE "Registrant|Creation|Expir|Name Server|Owner" | head -10 || aviso "whois falhou"
-fi
+{
+  if valida_ferramenta "whois"; then
+    whois "$DOMINIO" 2>/dev/null | grep -iE "Registrant|Creation|Expir|Name Server|Owner" | head -10 || aviso "whois falhou"
+  fi
+} > "$PAR_DIR/17.out" 2>&1 &
+PID17=$!
 
-# ===== PASSO 18: SEARCHSPLOIT =====
 progresso "SearchSploit - Buscando exploits" 2
-if valida_ferramenta "searchsploit"; then
-  SERVER=$(curl_rapido -I "$ALVO" 2>/dev/null | grep -i "^server:" | sed 's/.*: //')
-  [ -n "$SERVER" ] && searchsploit "$SERVER" 2>/dev/null | grep -i "vulnerability\|exploit" | head -10 || aviso "searchsploit falhou"
-fi
+{
+  if valida_ferramenta "searchsploit"; then
+    SERVER=$(curl_rapido -I "$ALVO" 2>/dev/null | grep -i "^server:" | sed 's/.*: //')
+    [ -n "$SERVER" ] && searchsploit "$SERVER" 2>/dev/null | grep -i "vulnerability\|exploit" | head -10 || aviso "searchsploit falhou"
+  fi
+} > "$PAR_DIR/18.out" 2>&1 &
+PID18=$!
+
+# Aguarda todos os passos paralelos
+wait $PID10 $PID11 $PID14 $PID16 $PID16H $PID17 $PID18 2>/dev/null
+
+# Exibe saidas na ordem
+for num in 10 11 14 16hydra 16 17 18; do
+  [ -f "$PAR_DIR/$num.out" ] && cat "$PAR_DIR/$num.out"
+  rm -f "$PAR_DIR/$num.out" 2>/dev/null
+done
+rm -rf "$PAR_DIR" 2>/dev/null
 
 # ===== PASSO 19: METODOS HTTP =====
 if [ "$WEB_ATIVO" = "1" ]; then
