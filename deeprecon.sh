@@ -1439,8 +1439,8 @@ else
   aviso "Pulando testes HTTP e exploracao (sem porta web)"
 fi
 
-# ===== PASSO 24: JOGUIN IA - SCORE HEURISTICO =====
-progresso "Joguin IA - Pensando... (score heuristico)" 2
+# ===== PASSO 24: JOGUIN IA - ANALISE HEURISTICA AVANCADA =====
+progresso "Joguin IA - Analisando dados..." 2
 REPORT_TEXT=$(cat "$REPORT" 2>/dev/null)
 TOTAL_CRIT=$(echo "$REPORT_TEXT" | grep -c "\[CRITICO\]")
 TOTAL_ALERT=$(echo "$REPORT_TEXT" | grep -c "\[ALERTA\]")
@@ -1465,17 +1465,25 @@ crossdomain_detect=$(echo "$REPORT_TEXT" | grep -c "CROSSDOMAIN.XML")
 services_detect=$(echo "$REPORT_TEXT" | grep -c "SERVICO ENCONTRADO")
 auth_detect=$(echo "$REPORT_TEXT" | grep -c "AUTENTICACAO REQUERIDA")
 waf_detect=$(echo "$REPORT_TEXT" | grep -c "WAF detectado")
+ssl_weak_detect=$(echo "$REPORT_TEXT" | grep -c "SSL ciphers fracos\|HEARTBLEED\|TLSv1\.0\|TLSv1\.1")
+accesso_livre=$(echo "$REPORT_TEXT" | grep -c "ACESSO LIVRE")
+metasploit_detect=$(echo "$REPORT_TEXT" | grep -c "METASPLOIT:")
 
-# --- PERFIL DO SITE ---
+# --- PERFIL DO SITE COM TECNOLOGIAS ---
 SITE_PERFIL=""
-[ "$sql_detect" -gt 0 ] && SITE_PERFIL="${SITE_PERFIL}Banco de dados vulneravel. "
-[ "$xss_detect" -gt 0 ] && SITE_PERFIL="${SITE_PERFIL}Reflete input do usuario. "
-[ "$creds_detect" -gt 0 ] && SITE_PERFIL="${SITE_PERFIL}Possui painel admin. "
-[ "$put_detect" -gt 0 ] && SITE_PERFIL="${SITE_PERFIL}Permite upload. "
-[ "$services_detect" -gt 0 ] && SITE_PERFIL="${SITE_PERFIL}Rodando PHP/hospedagem compartilhada. "
-[ -z "$SITE_PERFIL" ] && SITE_PERFIL="Site estatico ou bem configurado. "
+[ "$TEC_WP" = "1" ] && SITE_PERFIL="${SITE_PERFIL}WordPress detectado. "
+[ "$TEC_NGINX" = "1" ] && SITE_PERFIL="${SITE_PERFIL}Servidor Nginx. "
+[ "$TEC_APACHE" = "1" ] && SITE_PERFIL="${SITE_PERFIL}Servidor Apache. "
+[ "$TEC_IIS" = "1" ] && SITE_PERFIL="${SITE_PERFIL}Servidor IIS. "
+[ "$TEC_PHP" = "1" ] && SITE_PERFIL="${SITE_PERFIL}PHP detectado. "
+[ "$TEC_NODE" = "1" ] && SITE_PERFIL="${SITE_PERFIL}Node.js detectado. "
+[ "$TEC_SPA" = "1" ] && SITE_PERFIL="${SITE_PERFIL}SPA (${TEC_REACT:+React }${TEC_ANGULAR:+Angular }${TEC_VUE:+Vue}). "
+[ "$TEC_API" = "1" ] && SITE_PERFIL="${SITE_PERFIL}API REST/GraphQL detectada. "
+[ "$TEC_LOGIN" = "1" ] && SITE_PERFIL="${SITE_PERFIL}Pagina de login encontrada. "
+[ "$TEC_UPLOAD" = "1" ] && SITE_PERFIL="${SITE_PERFIL}Upload de arquivos. "
+[ -z "$SITE_PERFIL" ] && SITE_PERFIL="Site estatico ou infraestrutura padrao. "
 
-# --- PESOS E SCORES ---
+# --- PESOS E SCORES (por categoria de risco) ---
 declare -A SCORES
 SCORES["SQL INJECTION"]=95; SCORES["PATH TRAVERSAL"]=90; SCORES["WEBSHELL UPLOAD"]=100
 SCORES["REPOSITORIO GIT"]=80; SCORES["ARQUIVO .ENV"]=85; SCORES["DEFAULT CREDENTIALS"]=90
@@ -1485,7 +1493,10 @@ SCORES["CROSSDOMAIN.XML"]=35; SCORES["Falta X-Frame-Options"]=45; SCORES["Falta 
 SCORES["Falta CSP"]=30; SCORES["Falta X-Content-Type-Options"]=20; SCORES["Falta X-XSS-Protection"]=20
 SCORES["Cookie sem flag Secure"]=35; SCORES["WAF detectado"]=10; SCORES["Possivel XSS"]=60
 SCORES["Possivel SSTI"]=70; SCORES["CORS MISCONFIG"]=55; SCORES["AUTENTICACAO REQUERIDA"]=15
+SCORES["SSL ciphers fracos"]=50; SCORES["METASPLOIT:"]=75
+SCORES["ACESSO LIVRE"]=60; SCORES["HEARTBLEED"]=100
 
+# --- CORRELACAO AVANCADA ---
 CORRELATION_WEIGHT=0
 ATTACK_CHAINS=()
 if [ "$put_detect" -gt 0 ] && [ "$git_detect" -gt 0 ]; then
@@ -1515,6 +1526,15 @@ fi
 if [ "$traversal_detect" -gt 0 ] && [ "$config_detect" -gt 0 ]; then
   ATTACK_CHAINS+=("Path traversal + Config: Leitura de arquivos do sistema + credenciais"); CORRELATION_WEIGHT=$((CORRELATION_WEIGHT + 25))
 fi
+if [ "$sql_detect" -gt 0 ] && [ "$traversal_detect" -gt 0 ]; then
+  ATTACK_CHAINS+=("SQLi + Path Traversal: Acesso irrestrito ao banco + sistema de arquivos"); CORRELATION_WEIGHT=$((CORRELATION_WEIGHT + 35))
+fi
+if [ "$put_detect" -gt 0 ] && [ "$phpinfo_detect" -gt 0 ]; then
+  ATTACK_CHAINS+=("PUT + phpinfo: Mapeamento de caminhos + upload de webshell -> RCE"); CORRELATION_WEIGHT=$((CORRELATION_WEIGHT + 20))
+fi
+if [ "$creds_detect" -gt 0 ] && [ "$xss_detect" -gt 0 ]; then
+  ATTACK_CHAINS+=("Admin + XSS: Roubo de sessao do administrador -> acesso total"); CORRELATION_WEIGHT=$((CORRELATION_WEIGHT + 25))
+fi
 
 # --- SCORE FINAL ---
 TOTAL_PONTOS=0
@@ -1522,12 +1542,6 @@ TOTAL_PONTOS=0
 for key in "${!SCORES[@]}"; do
   count=$(echo "$REPORT_TEXT" | grep -c "$key")
   [ "$count" -gt 0 ] && TOTAL_PONTOS=$((TOTAL_PONTOS + (SCORES[$key] * count)))
-# ============================================================
-
-# ============================================================
-echo ""
-echo -e "${GREEN}${BOLD}╔══════════════════════════════════════════════════╗${RESET}"
-
 done
 TOTAL_PONTOS=$((TOTAL_PONTOS + CORRELATION_WEIGHT))
 RAW_SCORE=$((TOTAL_PONTOS * 100 / (TOTAL_ACHADOS * 100 + CORRELATION_WEIGHT)))
@@ -1540,45 +1554,88 @@ else IA_NIVEL="BAIXO"; IA_COR=$GREEN; fi
 
 MAIN_VECTOR=""
 if [ "$put_detect" -gt 0 ] && [ "$creds_detect" -gt 0 ]; then MAIN_VECTOR="Upload + Admin -> RCE (tomada total)"
+elif [ "$sql_detect" -gt 0 ] && [ "$traversal_detect" -gt 0 ]; then MAIN_VECTOR="SQLi + Path Traversal -> Data Breach + RCE"
 elif [ "$sql_detect" -gt 0 ] && [ "$config_detect" -gt 0 ]; then MAIN_VECTOR="SQLi + Config -> Data Breach + Escalacao"
 elif [ "$put_detect" -gt 0 ]; then MAIN_VECTOR="PUT -> Upload de webshell -> RCE"
 elif [ "$creds_detect" -gt 0 ]; then MAIN_VECTOR="Default Creds -> Acesso Admin -> Controle total"
 elif [ "$sql_detect" -gt 0 ]; then MAIN_VECTOR="SQLi -> Extracao de dados do banco"
 elif [ "$git_detect" -gt 0 ] || [ "$env_detect" -gt 0 ]; then MAIN_VECTOR="Vazamento de dados sensiveis"
 elif [ "$xss_detect" -gt 0 ]; then MAIN_VECTOR="XSS -> Roubo de sessao de usuarios"
+elif [ "$accesso_livre" -gt 0 ]; then MAIN_VECTOR="Diretorios expostos -> informacoes sensiveis"
 else MAIN_VECTOR="Multiplos fatores de risco baixo/médio"; fi
 
-# --- NARRATIVA DA IA ---
+# --- SCORE POR CATEGORIA ---
+CAT_EXEC_CODE=0; CAT_DATA_LEAK=0; CAT_ACCESS=0; CAT_CONFIG=0; CAT_CRYPTO=0
+[ "$sql_detect" -gt 0 ] && CAT_EXEC_CODE=$((CAT_EXEC_CODE + 35))
+[ "$traversal_detect" -gt 0 ] && CAT_EXEC_CODE=$((CAT_EXEC_CODE + 30))
+[ "$put_detect" -gt 0 ] && CAT_EXEC_CODE=$((CAT_EXEC_CODE + 25))
+[ "$ssti_detect" -gt 0 ] && CAT_EXEC_CODE=$((CAT_EXEC_CODE + 20))
+[ "$metasploit_detect" -gt 0 ] && CAT_EXEC_CODE=$((CAT_EXEC_CODE + 15))
+[ "$git_detect" -gt 0 ] && CAT_DATA_LEAK=$((CAT_DATA_LEAK + 25))
+[ "$env_detect" -gt 0 ] && CAT_DATA_LEAK=$((CAT_DATA_LEAK + 30))
+[ "$config_detect" -gt 0 ] && CAT_DATA_LEAK=$((CAT_DATA_LEAK + 20))
+[ "$backup_detect" -gt 0 ] && CAT_DATA_LEAK=$((CAT_DATA_LEAK + 15))
+[ "$phpinfo_detect" -gt 0 ] && CAT_DATA_LEAK=$((CAT_DATA_LEAK + 10))
+[ "$creds_detect" -gt 0 ] && CAT_ACCESS=$((CAT_ACCESS + 35))
+[ "$auth_detect" -gt 0 ] && CAT_ACCESS=$((CAT_ACCESS + 5))
+[ "$accesso_livre" -gt 0 ] && CAT_ACCESS=$((CAT_ACCESS + 25))
+[ "$xss_detect" -gt 0 ] && CAT_ACCESS=$((CAT_ACCESS + 15))
+[ "$cors_detect" -gt 0 ] && CAT_ACCESS=$((CAT_ACCESS + 10))
+[ "$xframe_detect" -gt 0 ] && CAT_CONFIG=$((CAT_CONFIG + 15))
+[ "$(echo "$REPORT_TEXT" | grep -c "Falta HSTS")" -gt 0 ] && CAT_CONFIG=$((CAT_CONFIG + 10))
+[ "$(echo "$REPORT_TEXT" | grep -c "Falta CSP")" -gt 0 ] && CAT_CONFIG=$((CAT_CONFIG + 10))
+[ "$(echo "$REPORT_TEXT" | grep -c "Falta X-Content-Type-Options")" -gt 0 ] && CAT_CONFIG=$((CAT_CONFIG + 5))
+[ "$(echo "$REPORT_TEXT" | grep -c "Cookie sem flag Secure")" -gt 0 ] && CAT_CONFIG=$((CAT_CONFIG + 10))
+[ "$crossdomain_detect" -gt 0 ] && CAT_CONFIG=$((CAT_CONFIG + 5))
+[ "$ssl_weak_detect" -gt 0 ] && CAT_CRYPTO=$((CAT_CRYPTO + 30))
+[ "$redirect_detect" -gt 0 ] && CAT_CRYPTO=$((CAT_CRYPTO + 10))
+[ "$PROTOCOLO" = "http" ] && CAT_CRYPTO=$((CAT_CRYPTO + 20))
+
+# --- NARRATIVA CONTEXTUAL AVANCADA ---
 NARRATIVA=""
-if [ "$RAW_SCORE" -ge 75 ]; then
-  NARRATIVA=$(cat << 'EOF'
-  AVALIACAO: Critico. Este site apresenta vulnerabilidades graves que 
-  permitem acesso total ao servidor e aos dados. Um atacante pode 
-  assumir o controle completo em minutos. Recomendacao: interrompa o 
-  acesso externo imediatamente e corrija as falhas criticas.
-EOF
-)
-elif [ "$RAW_SCORE" -ge 50 ]; then
-  NARRATIVA=$(cat << 'EOF'
-  AVALIACAO: Alto risco. O site possui uma combinacao perigosa de 
-  vulnerabilidades que, encadeadas, podem levar a uma invasao completa. 
-  A superficie de ataque e significativa. Priorize a correcao das 
-  cadeias de ataque identificadas.
-EOF
-)
-elif [ "$RAW_SCORE" -ge 25 ]; then
-  NARRATIVA=$(cat << 'EOF'
-  AVALIACAO: Risco moderado. Existem vulnerabilidades que precisam de 
-  atencao, mas nao representam perigo imediato isoladamente. Foque 
-  nas configuracoes de seguranca e hardening do servidor.
-EOF
-)
+NARRATIVA="${NARRATIVA}  AVALIACAO: ${IA_NIVEL}. "
+if [ "$TOTAL_ACHADOS" -le 2 ] && [ "$RAW_SCORE" -lt 25 ]; then
+  NARRATIVA="${NARRATIVA}A superficie de ataque deste alvo e limitada. "
+  NARRATIVA="${NARRATIVA}Nao foram encontradas vulnerabilidades criticas, e as configuracoes de seguranca parecem adequadas. "
+  NARRATIVA="${NARRATIVA}Recomenda-se manter as atualizacoes em dia e realizar scans periodicos para deteccao precoce. "
+elif [ "$TOTAL_ACHADOS" -le 5 ] && [ "$RAW_SCORE" -lt 50 ]; then
+  NARRATIVA="${NARRATIVA}O alvo apresenta vulnerabilidades de severidade baixa a moderada. "
+  NARRATIVA="${NARRATIVA}Embora nenhuma falha grave isolada tenha sido identificada, a combinacao de multiplos "
+  NARRATIVA="${NARRATIVA}problemas de configuracao aumenta a superficie de ataque. "
+  [ "$CAT_CONFIG" -gt 15 ] && NARRATIVA="${NARRATIVA}Headers de seguranca ausentes sao o principal fator de risco. "
+  [ "$CAT_CRYPTO" -gt 10 ] && NARRATIVA="${NARRATIVA}A camada de criptografia requiere atencao. "
+  NARRATIVA="${NARRATIVA}Recomenda-se hardening de headers e revisao de criptografia. "
+elif [ "$RAW_SCORE" -ge 50 ] && [ "$RAW_SCORE" -lt 75 ]; then
+  NARRATIVA="${NARRATIVA}Risco elevado. O alvo possui vulnerabilidades que, embora nao sejam criticas isoladamente, "
+  NARRATIVA="${NARRATIVA}podem ser encadeadas para comprometer o servidor. "
+  [ "$CAT_EXEC_CODE" -gt 30 ] && NARRATIVA="${NARRATIVA}Hua possibilidade de execucao remota de codigo atraves de "
+  NARRATIVA="${NARRATIVA}$([ "$sql_detect" -gt 0 ] && echo "SQL Injection" )$([ "$sql_detect" -gt 0 ] && [ "$traversal_detect" -gt 0 ] && echo " e " )$([ "$traversal_detect" -gt 0 ] && echo "Path Traversal" ). "
+  [ "$CAT_DATA_LEAK" -gt 25 ] && NARRATIVA="${NARRATIVA}Dados sensiveis estao expostos (credenciais, codigo fonte, backups). "
+  [ "$CAT_ACCESS" -gt 20 ] && NARRATIVA="${NARRATIVA}O controle de acesso e fragil - "
+  NARRATIVA="${NARRATIVA}$([ "$creds_detect" -gt 0 ] && echo "credenciais padrao funcionam" )$([ "$creds_detect" -gt 0 ] && [ "$accesso_livre" -gt 0 ] && echo " e " )$([ "$accesso_livre" -gt 0 ] && echo "diretorios administrativos estao acessiveis" ). "
+  NARRATIVA="${NARRATIVA}Priorize a correcao das cadeias de ataque identificadas. "
 else
-  NARRATIVA=$(cat << 'EOF'
-  AVALIACAO: Risco baixo. O site esta razoavelmente protegido. 
-  Mantenha as atualizacoes em dia e monitore os logs regularmente.
-EOF
-)
+  NARRATIVA="${NARRATIVA}Este alvo apresenta falhas GRAVES de seguranca que permitem acesso remoto "
+  NARRATIVA="${NARRATIVA}nao autorizado ao servidor e aos dados. Um atacante pode: "
+  local first=1
+  [ "$put_detect" -gt 0 ] && [ "$creds_detect" -gt 0 ] && {
+    NARRATIVA="${NARRATIVA}(1) obter acesso administrativo com credenciais padrao, (2) fazer upload de webshell via PUT, "
+    NARRATIVA="${NARRATIVA}(3) executar comandos no servidor como root"
+    first=0
+  }
+  [ "$sql_detect" -gt 0 ] && {
+    [ "$first" -eq 0 ] && NARRATIVA="${NARRATIVA}; ou ainda "
+    NARRATIVA="${NARRATIVA}(1) extrair todo o banco de dados via SQL Injection, "
+    NARRATIVA="${NARRATIVA}(2) obter credenciais de producao em arquivos expostos (.env, config)"
+    first=0
+  }
+  [ "$git_detect" -gt 0 ] && [ "$env_detect" -gt 0 ] && {
+    [ "$first" -eq 0 ] && NARRATIVA="${NARRATIVA}; alternativamente "
+    NARRATIVA="${NARRATIVA}(1) baixar o repositorio Git completo, (2) extrair chaves de API e tokens do .env"
+    first=0
+  }
+  [ "$first" -eq 1 ] && NARRATIVA="${NARRATIVA}explorar as multiplas vulnerabilidades identificadas para comprometer o sistema. "
+  NARRATIVA="${NARRATIVA} Recomendacao: interrompa o acesso externo imediatamente e corrija as falhas criticas. "
 fi
 
 # --- CVSS SIMULADO ---
@@ -1606,28 +1663,29 @@ CVSS_SCORE=$(echo "scale=1; $RAW_SCORE * 10 / 100" | bc 2>/dev/null)
 
 # --- QUICK WINS ---
 QUICK_WINS=()
-echo "$REPORT_TEXT" | grep -qi "Metodo PUT" && [ ${#QUICK_WINS[@]} -lt 3 ] && QUICK_WINS+=("1. Desabilite o metodo PUT (risco de RCE imediato)")
-echo "$REPORT_TEXT" | grep -qi "DEFAULT CREDENTIALS" && [ ${#QUICK_WINS[@]} -lt 3 ] && QUICK_WINS+=("2. Troque todas as senhas padrao (admin:admin, root:root)")
-echo "$REPORT_TEXT" | grep -qi "REPOSITORIO GIT" && [ ${#QUICK_WINS[@]} -lt 3 ] && QUICK_WINS+=("3. Bloqueie acesso ao .git (vazamento de codigo fonte)")
-echo "$REPORT_TEXT" | grep -qi "ARQUIVO .ENV" && [ ${#QUICK_WINS[@]} -lt 3 ] && QUICK_WINS+=("3. Bloqueie acesso ao .env (credenciais vazando)")
-echo "$REPORT_TEXT" | grep -qi "Falta X-Frame-Options" && [ ${#QUICK_WINS[@]} -lt 3 ] && QUICK_WINS+=("3. Adicione X-Frame-Options (clickjacking)")
-echo "$REPORT_TEXT" | grep -qi "PHPINFO EXPOSTO" && [ ${#QUICK_WINS[@]} -lt 3 ] && QUICK_WINS+=("3. Remova phpinfo.php (configuracoes expostas)")
+echo "$REPORT_TEXT" | grep -qi "Metodo PUT" && [ ${#QUICK_WINS[@]} -lt 3 ] && QUICK_WINS+=("Desabilite o metodo PUT (risco de RCE imediato)")
+echo "$REPORT_TEXT" | grep -qi "DEFAULT CREDENTIALS" && [ ${#QUICK_WINS[@]} -lt 3 ] && QUICK_WINS+=("Troque todas as senhas padrao (admin:admin, root:root)")
+echo "$REPORT_TEXT" | grep -qi "REPOSITORIO GIT" && [ ${#QUICK_WINS[@]} -lt 3 ] && QUICK_WINS+=("Bloqueie acesso ao .git (vazamento de codigo fonte)")
+echo "$REPORT_TEXT" | grep -qi "ARQUIVO .ENV" && [ ${#QUICK_WINS[@]} -lt 3 ] && QUICK_WINS+=("Bloqueie acesso ao .env (credenciais vazando)")
+echo "$REPORT_TEXT" | grep -qi "Falta X-Frame-Options" && [ ${#QUICK_WINS[@]} -lt 3 ] && QUICK_WINS+=("Adicione X-Frame-Options (clickjacking)")
+echo "$REPORT_TEXT" | grep -qi "PHPINFO EXPOSTO" && [ ${#QUICK_WINS[@]} -lt 3 ] && QUICK_WINS+=("Remova phpinfo.php (configuracoes expostas)")
+[ "$PROTOCOLO" = "http" ] && [ ${#QUICK_WINS[@]} -lt 3 ] && QUICK_WINS+=("Migre para HTTPS urgente (dados trafegam em texto claro)")
 
 # --- REMEDIATION ROADMAP ---
 FASE1=""; FASE2=""; FASE3=""
-echo "$REPORT_TEXT" | grep -qi "Metodo PUT\|WEBSHELL\|DEFAULT CREDENTIALS\|SQL INJECTION\|PATH TRAVERSAL" && FASE1="Imediata (24h): Bloquear PUT, trocar senhas, corrigir SQLi e path traversal"
+echo "$REPORT_TEXT" | grep -qi "Metodo PUT\|WEBSHELL\|DEFAULT CREDENTIALS\|SQL INJECTION\|PATH TRAVERSAL\|HEARTBLEED" && FASE1="Imediata (24h): Bloquear PUT, trocar senhas, corrigir SQLi, path traversal e SSL critico"
 echo "$REPORT_TEXT" | grep -qi "REPOSITORIO GIT\|ARQUIVO .ENV\|CONFIG EXPOSTO\|BACKUP\|PHPINFO\|OPEN REDIRECT\|CORS" && FASE2="Curto prazo (1 semana): Bloquear .git/.env, remover backups, corrigir redirect e CORS"
-echo "$REPORT_TEXT" | grep -qi "Falta X-Frame-Options\|Falta CSP\|Falta HSTS\|Cookie sem\|CROSSDOMAIN\|X-XSS-Protection\|X-Content-Type-Options\|SERVICO" && FASE3="Medio prazo (1 mes): Adicionar headers de seguranca, remover servicos desnecessarios"
+echo "$REPORT_TEXT" | grep -qi "Falta X-Frame-Options\|Falta CSP\|Falta HSTS\|Cookie sem\|CROSSDOMAIN\|X-XSS-Protection\|X-Content-Type-Options\|SERVICO\|ACESSO LIVRE" && FASE3="Medio prazo (1 mes): Adicionar headers de seguranca, restringir diretorios, remover servicos desnecessarios"
 
-# --- SAIDA DA IA ---
+# --- SAIDA DA IA MELHORADA ---
 echo ""
-echo -e "${IA_COR}${BOLD}╔══════════════════════════════════════════════════════════╗${RESET}"
-echo -e "${IA_COR}${BOLD}║         IA BRAIN - Score Heuristico de Risco            ║${RESET}"
-echo -e "${IA_COR}${BOLD}╠══════════════════════════════════════════════════════════╣${RESET}"
+echo -e "${IA_COR}${BOLD}╔══════════════════════════════════════════════════════════════╗${RESET}"
+echo -e "${IA_COR}${BOLD}║        JOGUIN IA - Analise Heuristica de Seguranca          ║${RESET}"
+echo -e "${IA_COR}${BOLD}╠══════════════════════════════════════════════════════════════╣${RESET}"
 echo -e "${IA_COR}${BOLD}║${RESET}"
 echo -e "${IA_COR}${BOLD}║${RESET}  ${BOLD}Resumo Executivo${RESET}"
-echo -e "${IA_COR}${BOLD}║${RESET}  ${IA_COR}$(echo "$NARRATIVA" | head -1)${RESET}"
-echo -e "${IA_COR}${BOLD}║${RESET}  ${IA_COR}$(echo "$NARRATIVA" | tail -2 | head -1)${RESET}"
+echo -e "${IA_COR}${BOLD}║${RESET}  ${IA_COR}$(echo "$NARRATIVA" | fold -s -w 75 | head -3)${RESET}"
+echo -e "${IA_COR}${BOLD}║${RESET}  ${IA_COR}$(echo "$NARRATIVA" | fold -s -w 75 | tail -n +4)${RESET}"
 echo -e "${IA_COR}${BOLD}║${RESET}"
 echo -e "${IA_COR}${BOLD}║${RESET}  ${BOLD}Perfil do site:${RESET} ${CYAN}$SITE_PERFIL${RESET}"
 echo -e "${IA_COR}${BOLD}║${RESET}"
@@ -1635,11 +1693,28 @@ echo -e "${IA_COR}${BOLD}║${RESET}  ${BOLD}Score de risco:${RESET}  ${IA_COR}$
 echo -e "${IA_COR}${BOLD}║${RESET}  ${BOLD}Achados:${RESET}        ${CYAN}${TOTAL_CRIT} criticos, ${TOTAL_ALERT} alertas    ${BOLD}Peso correl.:${RESET} ${CYAN}+${CORRELATION_WEIGHT}${RESET}"
 echo -e "${IA_COR}${BOLD}║${RESET}  ${BOLD}Vetor principal:${RESET} ${IA_COR}$MAIN_VECTOR${RESET}"
 echo -e "${IA_COR}${BOLD}║${RESET}"
+# --- RISK BREAKDOWN ---
+CAT_TOTAL=$((CAT_EXEC_CODE + CAT_DATA_LEAK + CAT_ACCESS + CAT_CONFIG + CAT_CRYPTO))
+[ "$CAT_TOTAL" -eq 0 ] && CAT_TOTAL=1
+echo -e "${IA_COR}${BOLD}║${RESET}  ${BOLD}Decomposicao de Risco por Categoria:${RESET}"
+CAT_BARS=("Execucao de Codigo" "$CAT_EXEC_CODE" "$RED" "Vazamento de Dados" "$CAT_DATA_LEAK" "$RED" "Controle de Acesso" "$CAT_ACCESS" "$YELLOW" "Configuracao" "$CAT_CONFIG" "$YELLOW" "Criptografia" "$CAT_CRYPTO" "$CYAN")
+for ((i=0;i<${#CAT_BARS[@]};i+=3)); do
+  nome="${CAT_BARS[$i]}"; val="${CAT_BARS[$((i+1))]}"; cor="${CAT_BARS[$((i+2))]}"
+  pct=$((val * 100 / CAT_TOTAL))
+  [ "$pct" -gt 100 ] && pct=100
+  nfill=$((pct / 4)); nempty=$((25 - nfill))
+  [ "$nfill" -gt 25 ] && nfill=25; [ "$nempty" -lt 0 ] && nempty=0
+  bf=$(printf "%${nfill}s" 2>/dev/null | tr ' ' '#'); be=$(printf "%${nempty}s" 2>/dev/null)
+  echo -e "${IA_COR}${BOLD}║${RESET}    ${cor}[${bf}${be}]${RESET}  ${pct}% - ${nome}"
+done
+echo -e "${IA_COR}${BOLD}║${RESET}"
+# --- QUICK WINS ---
 [ ${#QUICK_WINS[@]} -gt 0 ] && {
   echo -e "${IA_COR}${BOLD}║${RESET}  ${BOLD}Quick Wins - Correcoes Urgentes:${RESET}"
   for qw in "${QUICK_WINS[@]}"; do echo -e "${IA_COR}${BOLD}║${RESET}    ${GREEN}$qw${RESET}"; done
   echo -e "${IA_COR}${BOLD}║${RESET}"
 }
+# --- CHAINS ---
 echo -e "${IA_COR}${BOLD}║${RESET}  ${BOLD}Cadeias de ataque identificadas:${RESET}"
 if [ ${#ATTACK_CHAINS[@]} -eq 0 ]; then
   echo -e "${IA_COR}${BOLD}║${RESET}    ${GREEN}Nenhuma cadeia de ataque critica${RESET}"
@@ -1647,31 +1722,57 @@ else
   for chain in "${ATTACK_CHAINS[@]}"; do echo -e "${IA_COR}${BOLD}║${RESET}    ${RED}$chain${RESET}"; done
 fi
 echo -e "${IA_COR}${BOLD}║${RESET}"
+# --- IMPACT BY CATEGORY ---
 echo -e "${IA_COR}${BOLD}║${RESET}  ${BOLD}Analise de impacto por categoria:${RESET}"
-CAT_SQLI=$(echo "$REPORT_TEXT" | grep -c "SQL INJECTION"); [ "$CAT_SQLI" -gt 0 ] && echo -e "${IA_COR}${BOLD}║${RESET}    SQLi: ${RED}Perda total de dados do banco${RESET}" || echo -e "${IA_COR}${BOLD}║${RESET}    SQLi: ${GREEN}Nao detectado${RESET}"
-CAT_UPLOAD=$(echo "$REPORT_TEXT" | grep -c "Metodo PUT\|WEBSHELL"); [ "$CAT_UPLOAD" -gt 0 ] && echo -e "${IA_COR}${BOLD}║${RESET}    Upload: ${RED}Execucao remota de codigo (RCE)${RESET}" || echo -e "${IA_COR}${BOLD}║${RESET}    Upload: ${GREEN}Nao detectado${RESET}"
-CAT_CREDS=$(echo "$REPORT_TEXT" | grep -c "DEFAULT CREDENTIALS"); [ "$CAT_CREDS" -gt 0 ] && echo -e "${IA_COR}${BOLD}║${RESET}    Creds: ${RED}Acesso administrativo total${RESET}" || echo -e "${IA_COR}${BOLD}║${RESET}    Creds: ${GREEN}Nao detectado${RESET}"
-CAT_VAZ=$(echo "$REPORT_TEXT" | grep -c "REPOSITORIO GIT\|ARQUIVO .ENV\|CONFIG EXPOSTO\|BACKUP"); [ "$CAT_VAZ" -gt 0 ] && echo -e "${IA_COR}${BOLD}║${RESET}    Vazamento: ${RED}Exposicao de dados sensiveis${RESET}" || echo -e "${IA_COR}${BOLD}║${RESET}    Vazamento: ${GREEN}Nao detectado${RESET}"
-CAT_XSS=$(echo "$REPORT_TEXT" | grep -c "Possivel XSS"); [ "$CAT_XSS" -gt 0 ] && echo -e "${IA_COR}${BOLD}║${RESET}    XSS: ${YELLOW}Roubo de sessao de usuarios${RESET}" || echo -e "${IA_COR}${BOLD}║${RESET}    XSS: ${GREEN}Nao detectado${RESET}"
+cat_impact() {
+  local name="$1" detect="$2" impact="$3" color="$4"
+  [ "$detect" -gt 0 ] && echo -e "${IA_COR}${BOLD}║${RESET}    ${color}$name: $impact${RESET}" || echo -e "${IA_COR}${BOLD}║${RESET}    ${GREEN}$name: Nao detectado${RESET}"
+}
+cat_impact "SQL Injection" "$sql_detect" "Perda total de dados do banco" "$RED"
+cat_impact "Upload / Webshell" "$put_detect" "Execucao remota de codigo (RCE)" "$RED"
+cat_impact "Credenciais Padrao" "$creds_detect" "Acesso administrativo total" "$RED"
+cat_impact "Vazamento de Dados" "$((git_detect + env_detect + config_detect + backup_detect + phpinfo_detect))" "Exposicao de dados sensiveis" "$RED"
+cat_impact "Cross-Site Scripting" "$xss_detect" "Roubo de sessao de usuarios" "$YELLOW"
+cat_impact "Path Traversal" "$traversal_detect" "Leitura de arquivos do sistema" "$RED"
+cat_impact "Criptografia Fraca" "$ssl_weak_detect" "Interceptacao de trafego (MitM)" "$YELLOW"
+cat_impact "Headers de Seguranca" "$((xframe_detect + cors_detect))" "Clickjacking, XSS, ataques cross-origin" "$YELLOW"
 echo -e "${IA_COR}${BOLD}║${RESET}"
+# --- TECH INSIGHTS ---
+if [ -n "$TEC_NOME" ]; then
+  echo -e "${IA_COR}${BOLD}║${RESET}  ${BOLD}Recomendacoes por Tecnologia Detectada:${RESET}"
+  [ "$TEC_WP" = "1" ] && echo -e "${IA_COR}${BOLD}║${RESET}    ${CYAN}WordPress:${RESET} Mantenha core, temas e plugins atualizados. Remova usuarios e arquivos padrao."
+  [ "$TEC_PHP" = "1" ] && echo -e "${IA_COR}${BOLD}║${RESET}    ${CYAN}PHP:${RESET} Desabilite expose_php e display_errors. Use opcache e disable_functions."
+  [ "$TEC_NGINX" = "1" ] && echo -e "${IA_COR}${BOLD}║${RESET}    ${CYAN}Nginx:${RESET} Remova server_tokens. Configure rate limiting e WAF (ModSecurity)."
+  [ "$TEC_APACHE" = "1" ] && echo -e "${IA_COR}${BOLD}║${RESET}    ${CYAN}Apache:${RESET} Desabilite mod_info, mod_status, ServerTokens. Use ModSecurity."
+  [ "$TEC_NODE" = "1" ] && echo -e "${IA_COR}${BOLD}║${RESET}    ${CYAN}Node.js:${RESET} Nao rode como root. Use helmet para headers de seguranca. Limite corpo de requisicoes."
+  [ "$TEC_JAVA" = "1" ] && echo -e "${IA_COR}${BOLD}║${RESET}    ${CYAN}Java:${RESET} Desabilite JMX remoto. Use SecurityManager. Atualize o JDK."
+  [ "$TEC_API" = "1" ] && echo -e "${IA_COR}${BOLD}║${RESET}    ${CYAN}API:${RESET} Implemente rate limiting, autenticacao por token, validacao de input e CORS restritivo."
+  echo -e "${IA_COR}${BOLD}║${RESET}"
+fi
+# --- REMEDIATION ROADMAP ---
 [ -n "$FASE1" ] && { echo -e "${IA_COR}${BOLD}║${RESET}  ${RED}Fase 1 - $FASE1${RESET}"; }
 [ -n "$FASE2" ] && { echo -e "${IA_COR}${BOLD}║${RESET}  ${YELLOW}Fase 2 - $FASE2${RESET}"; }
 [ -n "$FASE3" ] && { echo -e "${IA_COR}${BOLD}║${RESET}  ${CYAN}Fase 3 - $FASE3${RESET}"; }
 echo -e "${IA_COR}${BOLD}║${RESET}"
-# --- SUPERFICIE DE ATAQUE ---
+# --- ATTACK SURFACE ---
 SURFACE_PORTS=$(echo "$REPORT_TEXT" | grep -cE "PORTA ABERTA|SERVICO ENCONTRADO")
 SURFACE_PATH=$(echo "$REPORT_TEXT" | grep -cE "ACESSO LIVRE|DIRETORIO|BACKUP|CONFIG EXPOSTO|INFO PHP|BACKUP WP-CONFIG|BACKUP BD|SERVICO ENCONTRADO")
-SURFACE_EXPLOIT=$(echo "$REPORT_TEXT" | grep -cE "SQL INJECTION|WEBSHELL|PUT|DEFAULT CREDENTIALS|REPOSITORIO GIT|ARQUIVO .ENV|PATH TRAVERSAL")
+SURFACE_EXPLOIT=$(echo "$REPORT_TEXT" | grep -cE "SQL INJECTION|WEBSHELL|PUT|DEFAULT CREDENTIALS|REPOSITORIO GIT|ARQUIVO .ENV|PATH TRAVERSAL|METASPLOIT:")
 SURFACE_TOTAL=$((SURFACE_PORTS * 2 + SURFACE_PATH * 3 + SURFACE_EXPLOIT * 5))
 [ "$SURFACE_TOTAL" -gt 100 ] && SURFACE_TOTAL=100
-SURFACE_BAR=$(printf "%$((SURFACE_TOTAL / 2))s" | tr ' ' '#')
-SURFACE_EMPTY=$(printf "%$((50 - SURFACE_TOTAL / 2))s")
+SURFACE_BAR=$(printf "%$((SURFACE_TOTAL / 2))s" 2>/dev/null | tr ' ' '#')
+SURFACE_EMPTY=$(printf "%$((50 - SURFACE_TOTAL / 2))s" 2>/dev/null)
 echo -e "${IA_COR}${BOLD}║${RESET}  ${BOLD}Superficie de ataque:${RESET}"
-echo -e "${IA_COR}${BOLD}║${RESET}    ${IA_COR}[${SURFACE_BAR}${SURFACE_EMPTY}]${RESET}"
+echo -e "${IA_COR}${BOLD}║${RESET}    ${IA_COR}[${SURFACE_BAR}${SURFACE_EMPTY}]${RESET}  ${SURFACE_TOTAL}%"
 echo -e "${IA_COR}${BOLD}║${RESET}    Portas/servicos: ${CYAN}${SURFACE_PORTS}${RESET} | Paths expostos: ${CYAN}${SURFACE_PATH}${RESET} | Exploitaveis: ${CYAN}${SURFACE_EXPLOIT}${RESET}"
+# --- CONFIDENCE ---
 echo -e "${IA_COR}${BOLD}║${RESET}"
-echo -e "${IA_COR}${BOLD}║${RESET}  ${BOLD}Confianca da analise:${RESET} ${IA_COR}$([ "$TOTAL_ACHADOS" -gt 0 ] && echo "Alta (${TOTAL_ACHADOS} achados processados)" || echo "Baixa (poucos dados)")${RESET}"
-echo -e "${IA_COR}${BOLD}╚══════════════════════════════════════════════════════════╝${RESET}"
+IA_CONF="Baixa"
+[ "$TOTAL_ACHADOS" -gt 5 ] && IA_CONF="Media"
+[ "$TOTAL_ACHADOS" -gt 15 ] && IA_CONF="Alta"
+[ "$TOTAL_ACHADOS" -gt 30 ] && IA_CONF="Muito Alta"
+echo -e "${IA_COR}${BOLD}║${RESET}  ${BOLD}Confianca:${RESET} ${IA_COR}${IA_CONF}${RESET} (${TOTAL_ACHADOS} achados, ${CAT_TOTAL} pts distribuidos em ${IA_NIVEL})"
+echo -e "${IA_COR}${BOLD}╚══════════════════════════════════════════════════════════════╝${RESET}"
 
 # Salva no relatorio
 {
@@ -1684,6 +1785,13 @@ echo -e "${IA_COR}${BOLD}╚═════════════════�
   echo "Achados: $TOTAL_CRIT criticos, $TOTAL_ALERT alertas"
   echo "Perfil: $SITE_PERFIL"
   echo "Vetor principal: $MAIN_VECTOR"
+  echo ""
+  echo "Decomposicao de risco:"
+  echo "  Execucao de Codigo: $CAT_EXEC_CODE pts"
+  echo "  Vazamento de Dados: $CAT_DATA_LEAK pts"
+  echo "  Controle de Acesso: $CAT_ACCESS pts"
+  echo "  Configuracao: $CAT_CONFIG pts"
+  echo "  Criptografia: $CAT_CRYPTO pts"
   echo ""
   echo "Cadeias de ataque:"
   for chain in "${ATTACK_CHAINS[@]}"; do echo "  [!!] $chain"; done
