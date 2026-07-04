@@ -1,6 +1,6 @@
 # DeepRecon 🔍
 
-Scanner de vulnerabilidades web completo com **35 passos automatizados**, motor cognitivo IA, análise SSL (A-F), relatórios TXT/HTML/JSON, integração Metasploit e detecção de hardware adaptativa.
+Scanner de vulnerabilidades web completo com **35 passos automatizados**, score heurístico de risco (Joguin IA), análise SSL (A-F), relatórios TXT/HTML/JSON, integração Metasploit e detecção adaptativa de hardware/rede.
 
 ## Instalação
 
@@ -117,47 +117,45 @@ cat /tmp/DeepRecon_*.json | jq .  # JSON (requer jq)
 - Em modo Furtivo, Gobuster, FFUF e WFuzz são **pulados automaticamente** — o delay de 1s entre requisições tornaria a varredura de wordlists (50k+ palavras) inviável (~14h).
 - O modo Furtivo foca apenas em reconhecimento passivo e testes leves.
 
-### 3. Correlação de Portas (ferramentas web detectam serviço por nome, não só por porta fixa)
+### 3. Correlação de Portas (serviço detectado por nome, não só por porta fixa)
 - Nmap extrai nome do serviço (`http`, `www`, `proxy`, `api`, `graphql`, `rest`, `dashboard`) via `-sV`
 - Portas web comuns ampliadas: 80, 443, 8080, 8443, **3000, 5000, 8000, 8888, 9000, 9090, 9443**
-- Se um servidor web rodar na porta 5000 ou 9000, `WEB_ATIVO=1` é ativado pelo nome do serviço OU pela porta
-- Fallback TCP bash scan também verifica todas as portas da lista ampliada
-- Nmap captura portas abertas em `PORTAS_ABERTAS[]`
-- `WEB_ATIVO=1` apenas se 80/443/8080/8443 estiverem abertas
-- Gobuster, SQLMap, Commix, FFUF, WFuzz, Nikto, WPScan, Hydra, Metasploit, XSS, path traversal, CORS, SSTI, PUT e demais testes HTTP só executam com `WEB_ATIVO=1`
+- Servidor web na porta 5000 ou 9000 → `WEB_ATIVO=1` ativado pelo nome do serviço ou pela porta
+- Gobuster, SQLMap, Commix, FFUF, WFuzz, Nikto, WPScan, Hydra, Metasploit e demais testes HTTP só executam com `WEB_ATIVO=1`
 - Evita centenas de erros e minutos perdidos contra portas fechadas
 
 ### 4. Verificação de Versões de Ferramentas
 - `verificar_versoes()` agora checa: Python 3, Go, Nmap (≥ 7.x), Ruby
 - Avisa se alguma ferramenta crítica estiver ausente ou desatualizada antes de começar o scan
 
-### 5. SQLMap com timeout — não trava o script
-- Cada chamada do SQLMap (GET, forms, cookie) tem **timeout de 120s**
-- Commix com timeout de 90s
-- Se o SQLMap travar num formulário lento, os passos seguintes não ficam esperando para sempre
-- Script continua linear por arquitetura shell, mas timeouts evitam bloqueio permanente
+### 5. Threads Ajustadas pela Rede (não só CPU/RAM)
 - Teste de latência contra 8.8.8.8 no startup
 - Rede lenta (>200ms): fator 0.3 — threads reduzidas para não saturar o Wi-Fi
 - Rede média (>80ms): fator 0.6
 - Rede rápida (<80ms): fator 1.0
-- Impede que um notebook potente em Wi-Fi de hotel queime a conexão com 30 threads
+- Impede notebook potente em Wi-Fi de hotel de queimar a conexão com 30 threads
 
-### 6. WPScan só roda com WhatWeb confirmado
+### 6. SQLMap com timeout — não trava o script
+- Cada chamada do SQLMap (GET, forms, cookie) tem **timeout de 120s**
+- Commix com timeout de 90s
+- Script continua linear por arquitetura shell, mas timeouts evitam bloqueio permanente
+
+### 7. WPScan só roda com WhatWeb confirmado
 - `WHATWEB_OUT` precisa ter conteúdo (WhatWeb executou com sucesso)
 - Se WhatWeb não rodou (ferramenta ausente ou falha), WPScan é pulado com aviso explícito
 
-### 7. Detecção de Nuvem + Alerta EDoS
+### 8. Detecção de Nuvem + Alerta EDoS
 - Identifica Cloudflare, AWS CloudFront, Google Cloud, Akamai, Incapsula via headers
 - Alerta sobre risco de cobrança financeira por auto-scaling (Economic Denial of Sustainability)
 - Em modo Bruto, pergunta se deseja continuar antes de prosseguir
 
-### 8. Suporte a .env para API Keys
+### 9. Suporte a .env para API Keys
 - Carrega automaticamente `$SCRIPT_DIR/.env` ou `~/.config/deeprecon/.env`
 - WPScan usa `WPSCAN_API_TOKEN` do `.env` no `--api-token`
 - `.env.example` incluso com documentação das chaves suportadas
 - `.env` e `reports/` no `.gitignore` — sem risco de vazar chaves no repositório
 
-### 9. Correções Gerais
+### 10. Correções Gerais
 - Bug de sintaxe corrigido: heredoc duplo substituído por template com placeholders + `sed`
 - Nmap `else` ausente: "Nmap não disponível" agora só aparece quando nmap realmente não está instalado
 - `bash -n` limpo em todas as versões
