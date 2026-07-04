@@ -1034,7 +1034,7 @@ if valida_ferramenta "nmap" && verificar_conexao "$ALVO"; then
     service=$(echo "$line" | awk '{for(i=3;i<=NF;i++) printf "%s ", $i}')
     [ -n "$port" ] && PORTAS_ABERTAS+=("$port")
     [ -n "$service" ] && echo "$service" | grep -qiE "http|www|web|proxy|api|rest|soap|graphql|dashboard|admin" && { WEB_ATIVO=1; SERVICOS_HTTP+=("$port"); }
-  done < <(echo "$NMAP_RAW" | grep "^[0-9]/tcp" | grep -v "^|")
+  done < <(echo "$NMAP_RAW" | grep -E "^[0-9]+/tcp" | grep -v "^|")
 else
   info "Nmap nao disponivel - usando bash TCP scan basico"
   for port in 21 22 23 25 53 80 110 143 443 445 993 995 1433 1521 2049 3306 3389 5432 5900 5985 5986 6379 8080 8443 9090 27017; do
@@ -1958,7 +1958,7 @@ progresso "Escaneando portas adicionais (top 1000)" 3
 {
   echo ""
   echo "=== PORTAS ADICIONAIS ==="
-  NMAP_EXTRA=$(nmap -T5 -Pn --top-ports 1000 --open "$DOMINIO" 2>/dev/null | grep "^[0-9]/tcp" | head -20)
+  NMAP_EXTRA=$(nmap -T5 -Pn --top-ports 1000 --open "$DOMINIO" 2>/dev/null | grep -E "^[0-9]+/tcp" | head -20)
   if [ -n "$NMAP_EXTRA" ]; then
     echo "$NMAP_EXTRA" | while read -r line; do
       port=$(echo "$line" | cut -d/ -f1)
@@ -2090,55 +2090,33 @@ echo -e "${RED}${BOLD}╔══════════════════�
 echo -e "${RED}${BOLD}║        REMENDIACAO - Comandos de correcao        ║${RESET}"
 echo -e "${RED}${BOLD}╠══════════════════════════════════════════════════╣${RESET}"
 
-echo "$REPORT_TEXT" | while IFS= read -r line; do
+grep -E "\[CRITICO\]|\[ALERTA\]" "$REPORT" 2>/dev/null | while IFS= read -r line; do
   fix=""
-  echo "$line" | grep -qi "SQL INJECTION" && fix="Corrigir SQLi: Use prepared statements (PDO/mysqli) e escape de parametros. Ex: \$stmt = \$pdo->prepare('SELECT * FROM users WHERE id = ?'); \$stmt->execute([\$id]);"
+  echo "$line" | grep -qi "SQL INJECTION" && fix="Corrigir SQLi: Use prepared statements (PDO/mysqli). Ex: \$stmt = \$pdo->prepare('SELECT * FROM users WHERE id = ?'); \$stmt->execute([\$id]);"
   echo "$line" | grep -qi "Falta X-Frame-Options\|Clickjacking" && fix="Clicljacking: add_header X-Frame-Options \"SAMEORIGIN\" always;"
-  echo "$line" | grep -qi "Metodo PUT habilitado\|WEBSHELL" && fix="PUT ativo: No nginx: if (\$request_method ~* \"(PUT|DELETE|PATCH)\") { return 405; }  No Apache: <LimitExcept GET POST HEAD> deny from all </LimitExcept>"
-  echo "$line" | grep -qi "DEFAULT CREDENTIALS" && fix="Credenciais padrao: Altere imediatamente as senhas. Use: htpasswd -c /etc/nginx/.htpasswd admin  e remova usuarios padrao."
-  echo "$line" | grep -qi "REPOSITORIO GIT EXPOSTO" && fix="Git exposto: Bloqueie .git no nginx: location ~ /\.git { deny all; }  No Apache: RedirectMatch 404 /\\.git(/.*)?$"
-  echo "$line" | grep -qi "ARQUIVO .ENV EXPOSTO" && fix=".env exposto: Nao sirva arquivos .env. No nginx: location ~ /\\.env { deny all; }"
-  echo "$line" | grep -qi "CONFIG EXPOSTO\|BACKUP WP-CONFIG\|BACKUP BD" && fix="Config/backup exposto: Bloqueie no servidor: location ~* \\.(bak|old|sql|dump|swp|save)$ { deny all; }"
+  echo "$line" | grep -qi "Metodo PUT habilitado\|WEBSHELL" && fix="PUT ativo: Bloqueie metodos PUT/DELETE/PATCH no servidor."
+  echo "$line" | grep -qi "DEFAULT CREDENTIALS" && fix="Credenciais padrao: Altere imediatamente as senhas de todos os usuarios padrao."
+  echo "$line" | grep -qi "REPOSITORIO GIT EXPOSTO" && fix="Git exposto: location ~ /\.git { deny all; }"
+  echo "$line" | grep -qi "ARQUIVO .ENV EXPOSTO" && fix=".env exposto: location ~ /\\.env { deny all; }"
+  echo "$line" | grep -qi "CONFIG EXPOSTO\|BACKUP WP-CONFIG\|BACKUP BD" && fix="Config/backup exposto: Bloqueie servindo arquivos .bak,.old,.sql,.dump,.swp,.save"
   echo "$line" | grep -qi "Falta HSTS" && fix="HSTS: add_header Strict-Transport-Security \"max-age=31536000; includeSubDomains\" always;"
-  echo "$line" | grep -qi "Falta CSP" && fix="CSP: add_header Content-Security-Policy \"default-src 'self'; script-src 'self'; style-src 'self'\" always;"
+  echo "$line" | grep -qi "Falta CSP" && fix="CSP: add_header Content-Security-Policy \"default-src 'self'\" always;"
   echo "$line" | grep -qi "Falta X-Content-Type-Options" && fix="X-Content-Type-Options: add_header X-Content-Type-Options \"nosniff\" always;"
   echo "$line" | grep -qi "Falta X-XSS-Protection" && fix="XSS-Protection: add_header X-XSS-Protection \"1; mode=block\" always;"
-  echo "$line" | grep -qi "Cookie sem flag Secure\|Cookie sem.*Secure" && fix="Cookie Secure: setcookie('nome', \$valor, ['secure' => true, 'httponly' => true, 'samesite' => 'Strict']);"
-  echo "$line" | grep -qi "CROSSDOMAIN.XML" && fix="Crossdomain: Delete o arquivo crossdomain.xml ou restrinja: <allow-access-from domain=\"seudominio.com\" />"
-  echo "$line" | grep -qi "OPEN REDIRECT" && fix="Open redirect: Valide o parametro de redirect com uma whitelist de URLs permitidas."
-  echo "$line" | grep -qi "PHPINFO EXPOSTO\|INFO PHP EXPOSTA" && fix="phpinfo exposto: Delete phpinfo.php e info.php. Nao mantenha arquivos de debug em producao."
-  echo "$line" | grep -qi "BACKUP EXPOSTO" && fix="Backup exposto: Nao armazene backups no diretorio publico do servidor web."
-  echo "$line" | grep -qi "SERVICO ENCONTRADO:.*phpinfo\|SERVICO ENCONTRADO:.*info" && fix="phpinfo remova: rm -f /var/www/html/phpinfo.php /var/www/html/info.php"
-  echo "$line" | grep -qi "SERVICO ENCONTRADO:.*adminer" && fix="Adminer remova: rm -f /var/www/html/adminer.php. Nao use ferramentas de banco em producao."
-  echo "$line" | grep -qi "SERVICO ENCONTRADO:.*server-status\|SERVICO ENCONTRADO:.*server-info" && fix="Server-status: Desabilite no Apache: a2disconf server-status  ou no nginx remova o bloco location."
-  echo "$line" | grep -qi "SERVICO ENCONTRADO:.*cgi-bin" && fix="CGI: Se nao precisar, desabilite: a2dismod cgi && systemctl restart apache2"
-  echo "$line" | grep -qi "PATH TRAVERSAL" && fix="Path traversal: Nao confie em input do usuario para caminhos de arquivos. Use basename() e realpath() para validar."
-  echo "$line" | grep -qi "ACESSO LIVRE:.*admin\|ACESSO LIVRE:.*wp-admin\|ACESSO LIVRE:.*painel\|ACESSO LIVRE:.*dashboard" && fix="Painel exposto: Restrinja por IP: allow 192.168.1.0/24; deny all;"
-  echo "$line" | grep -qi "CORS MISCONFIG" && fix="CORS: Nao use Access-Control-Allow-Origin: *. Defina origens especificas ou valide o header Origin."
-  echo "$line" | grep -qi "Apache versao antiga" && fix="Apache desatualizado: sudo apt-get update && sudo apt-get upgrade apache2"
-  echo "$line" | grep -qi "Nginx versao antiga" && fix="Nginx desatualizado: sudo apt-get update && sudo apt-get upgrade nginx"
-  echo "$line" | grep -qi "PHP versao antiga" && fix="PHP desatualizado: sudo apt-get update && sudo apt-get upgrade php"
-  echo "$line" | grep -qi "IIS versao antiga" && fix="IIS desatualizado: Atualize o Windows Server e o IIS via Windows Update."
-  echo "$line" | grep -qi "WAF detectado" && fix="WAF detectado: Revise as regras do WAF. Possivel falso positivo ou configuracao excessivamente restritiva."
-  echo "$line" | grep -qi "AUTENTICACAO REQUERIDA.*401" && fix="Autenticacao: Reforce as politicas de senha. Considere autenticacao de dois fatores (2FA)."
+  echo "$line" | grep -qi "ACESSO LIVRE" && fix="Painel exposto: Restrinja por IP (allow X.X.X.X; deny all;)"
+  echo "$line" | grep -qi "WAF detectado" && fix="WAF detectado: Revise as regras do WAF. Possivel falso positivo."
   if [ -n "$fix" ]; then
     achado=$(echo "$line" | sed 's/\[CRITICO\] //;s/\[ALERTA\] //')
+    echo ""
+    echo -e "${GREEN}${BOLD}╔══════════════════════════════════════════════════╗${RESET}"
     echo -e "${RED}${BOLD}║${RESET}"
     echo -e "${RED}${BOLD}║${RESET}  ${BOLD}Achado:${RESET} ${YELLOW}$achado${RESET}"
     echo -e "${RED}${BOLD}║${RESET}  ${BOLD}FIX:${RESET}   ${GREEN}$fix${RESET}"
-    echo -e "${RED}${BOLD}║${RESET}  ${BOLD}CMD:${RESET}   ${CYAN}$(echo "$fix" | grep -oP 'sudo[^.\n]*|a2dismod[^.\n]*|rm -f[^.\n]*|systemctl[^.\n]*|htpasswd[^.\n]*|RedirectMatch[^.\n]*|allow[^.\n]*|add_header[^.\n]*|setcookie[^.\n]*|location[^.\n]*|IfModule[^.\n]*|LimitExcept[^.\n]*' | head -1)${RESET}"
-    {
-      echo ""
-      echo "[FIX] $achado"
-      echo "  Comando: $(echo "$fix" | grep -oP 'sudo[^.\n]*|a2dismod[^.\n]*|rm -f[^.\n]*|systemctl[^.\n]*|htpasswd[^.\n]*|RedirectMatch[^.\n]*|add_header[^.\n]*|location[^.\n]*|LimitExcept[^.\n]*' | head -1)"
-    } >> "$REPORT"
+    echo -e "${RED}${BOLD}║${RESET}  ${BOLD}CMD:${RESET}   ${CYAN}$(echo "$fix" | grep -oP 'sudo[^.\n]*|a2dismod[^.\n]*|rm[^.\n]*|systemctl[^.\n]*|htpasswd[^.\n]*|add_header[^.\n]*|location[^.\n]*' | head -1)${RESET}"
+    echo "" >> "$REPORT"
+    echo "[FIX] $achado" >> "$REPORT"
+    echo "  Comando: $(echo "$fix" | grep -oP 'sudo[^.\n]*|a2dismod[^.\n]*|rm[^.\n]*|systemctl[^.\n]*|htpasswd[^.\n]*|add_header[^.\n]*|location[^.\n]*' | head -1)" >> "$REPORT"
   fi
-# ============================================================
-
-# ============================================================
-echo ""
-echo -e "${GREEN}${BOLD}╔══════════════════════════════════════════════════╗${RESET}"
-
 done
 
 echo -e "${RED}${BOLD}╚══════════════════════════════════════════════════╝${RESET}"
