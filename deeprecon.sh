@@ -2556,6 +2556,17 @@ case $ATAQUE_OPT in
 esac
 echo ""
 
+# Mostra o relatorio completo apos o menu de ataque
+echo ""
+echo -e "${CYAN}${BOLD}╔══════════════════════════════════════════════════╗${RESET}"
+echo -e "${CYAN}${BOLD}║         RELATORIO DO SCAN - DeepRecon          ║${RESET}"
+echo -e "${CYAN}${BOLD}╠══════════════════════════════════════════════════╣${RESET}"
+echo -e "${CYAN}${BOLD}║${RESET}  ${BOLD}Alvo:${RESET}  $ALVO"
+echo -e "${CYAN}${BOLD}║${RESET}  ${BOLD}Data:${RESET}  $(date '+%d/%m/%Y %H:%M')"
+echo -e "${CYAN}${BOLD}╚══════════════════════════════════════════════════╝${RESET}"
+echo ""
+[ -f "$REPORT" ] && cat "$REPORT" 2>/dev/null || echo -e "${YELLOW}[!] Relatorio nao encontrado${RESET}"
+
 # Trunca relatorio se exceder limite (seguranca contra estouro de disco)
 [ -f "$REPORT" ] && [ "$(stat -c%s "$REPORT" 2>/dev/null || echo 0)" -gt "$MAX_OUTPUT_BYTES" ] && {
   head -c "$MAX_OUTPUT_BYTES" "$REPORT" > "${REPORT}.trim" 2>/dev/null && mv "${REPORT}.trim" "$REPORT" 2>/dev/null
