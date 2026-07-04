@@ -56,6 +56,20 @@ else
   HW_COR=$GREEN
 fi
 
+# Teste de qualidade de rede (ping para Google DNS)
+NET_LATENCY=$(ping -c 2 -W 2 8.8.8.8 2>/dev/null | tail -1 | grep -oP '/\K[\d.]+' | head -1)
+NET_LATENCY=${NET_LATENCY:-999}
+if [ "$(echo "$NET_LATENCY > 200" | bc -l 2>/dev/null)" = "1" ] || [ "$NET_LATENCY" = "999" ]; then
+  NET_NIVEL="BAIXO"; NET_FATOR=0.3
+elif [ "$(echo "$NET_LATENCY > 80" | bc -l 2>/dev/null)" = "1" ]; then
+  NET_NIVEL="MEDIO"; NET_FATOR=0.6
+else
+  NET_NIVEL="ALTO"; NET_FATOR=1.0
+fi
+THREADS=$(echo "$THREADS * $NET_FATOR" | bc 2>/dev/null | sed 's/\..*//')
+[ -z "$THREADS" ] && THREADS=5
+[ "$THREADS" -lt 1 ] && THREADS=1
+
 # ============================================================
 # FUNCAO LOADING BAR
 # ============================================================
@@ -336,6 +350,8 @@ URL_GIT="https://api.github.com/repos/derambrplays/DeepRecon/releases/latest"
 verificar_versoes() {
   local pyver=$(python3 --version 2>/dev/null | grep -oP '\d+\.\d+')
   local gover=$(go version 2>/dev/null | grep -oP '\d+\.\d+')
+  local nmapver=$(nmap --version 2>/dev/null | grep -oP '\d+\.\d+' | head -1)
+  local rubyver=$(ruby --version 2>/dev/null | grep -oP '\d+\.\d+')
   local ok=0
   [ -z "$pyver" ] && aviso "Python 3 nao encontrado - SQLMap/Commix podem falhar" && ok=1
   [ -n "$pyver" ] && {
@@ -343,6 +359,12 @@ verificar_versoes() {
     [ "$pymajor" -lt 3 ] && aviso "Python $pyver detectado - SQLMap exige Python 3" && ok=1
   }
   [ -z "$gover" ] && aviso "Go nao encontrado - Subfinder/Amass podem falhar" && ok=1
+  [ -z "$nmapver" ] && aviso "Nmap nao encontrado - scans de porta serao via TCP/bash" && ok=1
+  [ -n "$nmapver" ] && {
+    local nmapmajor=${nmapver%%.*}
+    [ "$nmapmajor" -lt 7 ] && aviso "Nmap $nmapver antigo - atualize via 'sudo apt install nmap' para melhores resultados" && ok=1
+  }
+  [ -z "$rubyver" ] && aviso "Ruby nao encontrado - Metasploit pode falhar" 
   [ "$ok" -eq 0 ] && info "Todas as versoes de runtime sao compativeis"
   return "$ok"
 }
@@ -642,7 +664,7 @@ TOOL_THREADS=$(( TOOL_THREADS < THREADS ? TOOL_THREADS : THREADS ))
 
 # modo custom: selecao passo a passo
 if [ "$MODO" = "custom" ]; then
-  STEP_NAMES=("WAF detect" "Headers" "WhatWeb" "SSL/TLS" "Subdominios" "Nmap" "Diretorios" "Arquivos sensiveis" "SQLMap" "Commix" "FFUF" "WFuzz" "Nikto" "WPScan" "Hydra" "DNSRecon" "Whois" "SearchSploit" "HTTP Methods" "Servicos comuns" "CVE Check" "Exploracao agressiva" "Metasploit" "IA Brain" "Site info" "Email Security" "robots.txt" "SSL Grade" "JWT Hunter" "Traceroute" "WAF Behavior" "Tech CVE" "JSON Export" "HTML Report" "Deep Ports + SMB")
+  STEP_NAMES=("WAF detect" "Headers" "WhatWeb" "SSL/TLS" "Subdominios" "Nmap" "Diretorios" "Arquivos sensiveis" "SQLMap" "Commix" "FFUF" "WFuzz" "Nikto" "WPScan" "Hydra" "DNSRecon" "Whois" "SearchSploit" "HTTP Methods" "Servicos comuns" "CVE Check" "Exploracao agressiva" "Metasploit" "Joguin IA" "Site info" "Email Security" "robots.txt" "SSL Grade" "JWT Hunter" "Traceroute" "WAF Behavior" "Tech CVE" "JSON Export" "HTML Report" "Deep Ports + SMB")
   STEP_CHOICES=(); CUMULATIVE_NOISE=0
   for ((i=0;i<${#STEP_NAMES[@]};i++)); do
     rn=${NOISE_LEVELS[$i]}; rc=$([ "$rn" -le 2 ]&&echo "$GREEN"||[ "$rn" -le 5 ]&&echo "$YELLOW"||echo "$RED")
@@ -740,6 +762,7 @@ PASSO_ATUAL=0
 TEC_WP=0 TEC_JOOMLA=0 TEC_DRUPAL=0 TEC_IIS=0 TEC_APACHE=0 TEC_NGINX=0
 TEC_PHP=0 TEC_ASP=0 TEC_PYTHON=0 TEC_NODE=0 TEC_JAVA=0
 TEC_LOGIN=0 TEC_PARAM=0 TEC_FORM=0 TEC_UPLOAD=0 TEC_NOME=""
+WHATWEB_OUT=""
 
 # instala ferramenta sob demanda
 instalar_se_precisar() {
@@ -932,7 +955,7 @@ done
 
 # ===== PASSO 8: GOBUSTER =====
 progresso "Gobuster - Descobrindo diretorios" 2
-if [ "$WEB_ATIVO" = "1" ] && valida_ferramenta "gobuster" && verificar_conexao "$ALVO"; then
+if [ "$WEB_ATIVO" = "1" ] && [ "$MODO" != "furtivo" ] && valida_ferramenta "gobuster" && verificar_conexao "$ALVO"; then
   WORDLIST="/usr/share/wordlists/dirbuster/directory-list-2.3-medium.txt"
   [ ! -f "$WORDLIST" ] && WORDLIST="/usr/share/wordlists/dirb/common.txt"
   if [ -f "$WORDLIST" ]; then
@@ -1009,7 +1032,7 @@ fi
 
 # ===== PASSO 12: FFUF =====
 progresso "FFUF - Forca bruta de diretorios" 2
-if [ "$WEB_ATIVO" = "1" ] && valida_ferramenta "ffuf" && verificar_conexao "$ALVO"; then
+if [ "$WEB_ATIVO" = "1" ] && [ "$MODO" != "furtivo" ] && valida_ferramenta "ffuf" && verificar_conexao "$ALVO"; then
   WL="/usr/share/wordlists/dirb/common.txt"
   if [ -f "$WL" ]; then
     (ffuf -u "$ALVO/FUZZ" -w "$WL" -t "$TOOL_THREADS" -c -s -fc 404,403 2>/dev/null || aviso "ffuf falhou") | head -40
@@ -1018,7 +1041,7 @@ fi
 
 # ===== PASSO 13: WFUZZ =====
 progresso "WFuzz - Fuzzing de parametros" 2
-if [ "$WEB_ATIVO" = "1" ] && [ "$MODO_SEGURO" != "1" ] && valida_ferramenta "wfuzz" && verificar_conexao "$ALVO"; then
+if [ "$WEB_ATIVO" = "1" ] && [ "$MODO" != "furtivo" ] && [ "$MODO_SEGURO" != "1" ] && valida_ferramenta "wfuzz" && verificar_conexao "$ALVO"; then
   PARAM=$(curl_rapido "$ALVO" 2>/dev/null | grep -oP '(?<=\?)[a-z]+(?==)' | head -1)
   if [ -n "$PARAM" ]; then
     (wfuzz -c -z file,/usr/share/wordlists/dirb/common.txt -u "${ALVO}?FUZZ=1" --hc 404 2>/dev/null || aviso "wfuzz falhou") | head -15
@@ -1039,11 +1062,13 @@ fi
 
 # ===== PASSO 15: WPSCAN =====
 progresso "WPScan - WordPress" 2
-if [ "$WEB_ATIVO" = "1" ] && [ "$TEC_WP" = "1" ] && valida_ferramenta "wpscan"; then
+if [ "$WEB_ATIVO" = "1" ] && [ "$TEC_WP" = "1" ] && [ -n "$WHATWEB_OUT" ] && valida_ferramenta "wpscan"; then
   local wpscan_token="${WPSCAN_API_TOKEN:-}"
   wpscan --url "$ALVO" --no-update ${wpscan_token:+--api-token "$wpscan_token"} 2>/dev/null | grep -iE "WordPress|theme|plugin|vulnerability|identified|User|admin" | head -15 || aviso "wpscan falhou"
 elif [ "$TEC_WP" = "0" ]; then
   info "WPScan pulado - WordPress nao detectado"
+elif [ -z "$WHATWEB_OUT" ]; then
+  info "WPScan pulado - WhatWeb nao executou (tecnologia do alvo desconhecida)"
 fi
 
 # ===== PASSO 16: HYDRA =====
@@ -1276,8 +1301,8 @@ else
   aviso "Pulando testes HTTP e exploracao (sem porta web)"
 fi
 
-# ===== PASSO 24: IA BRAIN - MOTOR COGNITIVO =====
-progresso "IA Brain - Pensando... (motor cognitivo ativado)" 2
+# ===== PASSO 24: JOGUIN IA - SCORE HEURISTICO =====
+progresso "Joguin IA - Pensando... (score heuristico)" 2
 REPORT_TEXT=$(cat "$REPORT" 2>/dev/null)
 TOTAL_CRIT=$(echo "$REPORT_TEXT" | grep -c "\[CRITICO\]")
 TOTAL_ALERT=$(echo "$REPORT_TEXT" | grep -c "\[ALERTA\]")
@@ -1459,7 +1484,7 @@ echo "$REPORT_TEXT" | grep -qi "Falta X-Frame-Options\|Falta CSP\|Falta HSTS\|Co
 # --- SAIDA DA IA ---
 echo ""
 echo -e "${IA_COR}${BOLD}╔══════════════════════════════════════════════════════════╗${RESET}"
-echo -e "${IA_COR}${BOLD}║         IA BRAIN - Motor Cognitivo de Analise            ║${RESET}"
+echo -e "${IA_COR}${BOLD}║         IA BRAIN - Score Heuristico de Risco            ║${RESET}"
 echo -e "${IA_COR}${BOLD}╠══════════════════════════════════════════════════════════╣${RESET}"
 echo -e "${IA_COR}${BOLD}║${RESET}"
 echo -e "${IA_COR}${BOLD}║${RESET}  ${BOLD}Resumo Executivo${RESET}"
@@ -1514,7 +1539,7 @@ echo -e "${IA_COR}${BOLD}╚═════════════════�
 {
   echo ""
   echo "============================================"
-  echo "IA BRAIN - MOTOR COGNITIVO"
+  echo "JOGUIN IA - SCORE HEURISTICO"
   echo "============================================"
   echo "Score de risco: $RAW_SCORE% - $IA_NIVEL"
   echo "CVSS: $CVSS_STRING (score: $CVSS_SCORE)"

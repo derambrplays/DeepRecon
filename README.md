@@ -56,7 +56,7 @@ Pula o menu interativo e inicia o scan imediatamente.
 | 21 | CVE Check | Verifica versões antigas de servidores |
 | 22 | Exploração agressiva | XSS, path traversal, .git/.env, CORS, default creds, SSTI, PUT webshell, open redirect |
 | 23 | Metasploit | 7 scanners auxiliares (http_header, robots_txt, git_scanner, etc) |
-| 24 | IA Brain | Motor cognitivo: narrativa, score, CVSS, quick wins, roadmap, superfície de ataque |
+| 24 | Joguin IA | Score heurístico: narrativa, score, CVSS, quick wins, roadmap, superfície de ataque |
 | 25 | Info do site | Servidor, CDN, SSL, whois, idade do domínio, tecnologias |
 | 26 | Email Security | SPF, DMARC, DKIM, BIMI, MX records |
 | 27 | Robots/Security/Sitemap | Análise de robots.txt, security.txt, sitemap.xml |
@@ -88,7 +88,7 @@ cat /tmp/DeepRecon_*.json | jq .  # JSON (requer jq)
 ## Funcionalidades
 
 - **35 passos automatizados** de reconhecimento e exploração
-- **IA Brain**: motor cognitivo com score, CVSS 3.1, cadeias de ataque, quick wins, roadmap de remediação
+- **Joguin IA**: score heurístico de risco com CVSS 3.1, cadeias de ataque, quick wins, roadmap de remediação (não é LLM — sem alucinações)
 - **Metasploit**: 7 scanners auxiliares integrados
 - **SSL Grade**: classificação A+ a F estilo SSL Labs
 - **Email Security**: SPF, DMARC, DKIM, BIMI
@@ -102,6 +102,10 @@ cat /tmp/DeepRecon_*.json | jq .  # JSON (requer jq)
 
 ## Problemas Resolvidos
 
+### 0. "Joguin IA" substitui "IA Brain"
+- O antigo "IA Brain" foi renomeado para **Joguin IA** para deixar claro que é um **score heurístico matemático** (pesos + contagens), **não um LLM**.
+- Sem alucinações: o score reflete exatamente os achados do scan, sem inventar riscos.
+
 ### 1. Rate Limiting Global (evita DoS, EDoS e travamento da rede)
 - Delay entre requisições configurável por modo (Furtivo=1000ms, Medio=300ms, Bruto=100ms)
 - Threads das ferramentas (Gobuster, FFUF) limitadas pelo rate limit
@@ -109,24 +113,43 @@ cat /tmp/DeepRecon_*.json | jq .  # JSON (requer jq)
 - Modo Furtivo usa delay de 1s entre requisições — seguro para qualquer roteador
 - `curl_rapido` com controle de taxa embutido
 
-### 2. Correlação de Portas (ferramentas web só rodam se porta web estiver aberta)
+### 2. Modo Furtivo sem brute force web
+- Em modo Furtivo, Gobuster, FFUF e WFuzz são **pulados automaticamente** — o delay de 1s entre requisições tornaria a varredura de wordlists (50k+ palavras) inviável (~14h).
+- O modo Furtivo foca apenas em reconhecimento passivo e testes leves.
+
+### 3. Correlação de Portas (ferramentas web só rodam se porta web estiver aberta)
 - Nmap captura portas abertas em `PORTAS_ABERTAS[]`
 - `WEB_ATIVO=1` apenas se 80/443/8080/8443 estiverem abertas
 - Gobuster, SQLMap, Commix, FFUF, WFuzz, Nikto, WPScan, Hydra, Metasploit, XSS, path traversal, CORS, SSTI, PUT e demais testes HTTP só executam com `WEB_ATIVO=1`
 - Evita centenas de erros e minutos perdidos contra portas fechadas
 
-### 3. Detecção de Nuvem + Alerta EDoS
+### 4. Verificação de Versões de Ferramentas
+- `verificar_versoes()` agora checa: Python 3, Go, Nmap (≥ 7.x), Ruby
+- Avisa se alguma ferramenta crítica estiver ausente ou desatualizada antes de começar o scan
+
+### 5. Threads Ajustadas pela Rede (não só CPU/RAM)
+- Teste de latência contra 8.8.8.8 no startup
+- Rede lenta (>200ms): fator 0.3 — threads reduzidas para não saturar o Wi-Fi
+- Rede média (>80ms): fator 0.6
+- Rede rápida (<80ms): fator 1.0
+- Impede que um notebook potente em Wi-Fi de hotel queime a conexão com 30 threads
+
+### 6. WPScan só roda com WhatWeb confirmado
+- `WHATWEB_OUT` precisa ter conteúdo (WhatWeb executou com sucesso)
+- Se WhatWeb não rodou (ferramenta ausente ou falha), WPScan é pulado com aviso explícito
+
+### 7. Detecção de Nuvem + Alerta EDoS
 - Identifica Cloudflare, AWS CloudFront, Google Cloud, Akamai, Incapsula via headers
 - Alerta sobre risco de cobrança financeira por auto-scaling (Economic Denial of Sustainability)
 - Em modo Bruto, pergunta se deseja continuar antes de prosseguir
 
-### 4. Suporte a .env para API Keys
+### 8. Suporte a .env para API Keys
 - Carrega automaticamente `$SCRIPT_DIR/.env` ou `~/.config/deeprecon/.env`
 - WPScan usa `WPSCAN_API_TOKEN` do `.env` no `--api-token`
 - `.env.example` incluso com documentação das chaves suportadas
 - `.env` e `reports/` no `.gitignore` — sem risco de vazar chaves no repositório
 
-### 5. Correções Gerais
+### 9. Correções Gerais
 - Bug de sintaxe corrigido: heredoc duplo substituído por template com placeholders + `sed`
 - Nmap `else` ausente: "Nmap não disponível" agora só aparece quando nmap realmente não está instalado
 - `bash -n` limpo em todas as versões
