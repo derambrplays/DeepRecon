@@ -12,6 +12,8 @@
 # Use apenas em sistemas que voce tem autorizacao.
 # ============================================================
 
+export PATH="$HOME/go/bin:$HOME/.local/bin:$PATH"
+
 RED='\033[1;31m'
 GREEN='\033[1;32m'
 YELLOW='\033[1;33m'
@@ -1092,6 +1094,21 @@ if [ ${#SCOPE_ALVOS[@]} -gt 0 ]; then
   done
 fi
 
+# ===== PASSO 6.5: GAU / WAYBACKURLS =====
+progresso "Gau + Wayback - Endpoints historicos" 2
+if [ "$WEB_ATIVO" = "1" ]; then
+  if command -v gau &>/dev/null; then
+    echo ""
+    echo "=== GAU (GetAllUrls) - Wayback Machine + AlienVault ==="
+    gau --subs "$DOMINIO" 2>/dev/null | head -50 || aviso "gau falhou"
+  fi
+  if command -v waybackurls &>/dev/null; then
+    echo ""
+    echo "=== waybackurls - Archive.org ==="
+    waybackurls "$DOMINIO" 2>/dev/null | head -50 || aviso "waybackurls falhou"
+  fi
+fi
+
 # ===== PASSO 7: NMAP =====
 progresso "Nmap - Escaneando portas" 2
 PORTAS_ABERTAS=(); SERVICOS_HTTP=(); WEB_ATIVO=0
@@ -1239,6 +1256,12 @@ else
   [ "$MODO_SEGURO" = "1" ] && info "WFuzz pulado pelo modo seguro"
 fi
 
+# Passo 13.5: Katana - Crawler moderno
+progresso "Katana - Crawler de endpoints" 2
+if [ "$WEB_ATIVO" = "1" ] && command -v katana &>/dev/null && verificar_conexao "$ALVO"; then
+  katana -u "$ALVO" -d 2 -silent -jc -kf -c 20 2>/dev/null | head -80 || aviso "katana falhou"
+fi
+
 progresso "Nikto - Varredura de vulnerabilidades" 2
 {
   if [ "$WEB_ATIVO" = "1" ] && valida_ferramenta "nikto" && verificar_conexao "$ALVO"; then
@@ -1319,6 +1342,27 @@ for num in 10 11 14 16hydra 16 17 18; do
   rm -f "$PAR_DIR/$num.out" 2>/dev/null
 done
 rm -rf "$PAR_DIR" 2>/dev/null
+
+# ===== PASSO 18.5: SUBDOMAIN TAKEOVER =====
+progresso "Verificando subdomain takeover" 2
+if command -v dig &>/dev/null && [ "$WEB_ATIVO" = "1" ]; then
+  for sub in "${SCOPE_ALVOS[@]}"; do
+    cname=$(dig +short CNAME "$sub" 2>/dev/null | head -1)
+    [ -z "$cname" ] && continue
+    echo "  $sub -> $cname"
+    for takeover_pat in "s3.amazonaws.com" "cloudfront.net" "github.io" "herokuapp.com" "azurewebsites.net" "trafficmanager.net" "elasticbeanstalk.com" "firebaseio.com" "surge.sh" "unbounce.com" "wpengine.com" "myshopify.com" "helpshift.com" "uservoice.com" "zendesk.com" "freshdesk.com" "statuspage.io" "atlassian.net"; do
+      if echo "$cname" | grep -qi "$takeover_pat"; then
+        # Verifica se o servico responde (se nao responder, pode ser takeover)
+        takeresponse=$(curl_rapido -o /dev/null -w "%{http_code}" --max-time 5 "http://$sub" 2>/dev/null)
+        if [ "$takeresponse" = "404" ] || [ "$takeresponse" = "000" ]; then
+          critico "SUBDOMAIN TAKEOVER: $sub ($cname) - servico nao encontrado (HTTP $takeresponse)"
+        else
+          aviso "POSSIVEL TAKEOVER: $sub aponta para $takeover_pat (code $takeresponse)"
+        fi
+      fi
+    done
+  done
+fi
 
 # ===== PASSO 19: METODOS HTTP =====
 if [ "$WEB_ATIVO" = "1" ]; then
@@ -1461,6 +1505,56 @@ echo ""
 echo -e "${GREEN}${BOLD}╔══════════════════════════════════════════════════╗${RESET}"
 
 done
+
+# ===== PASSO 22.5: DALFOX - XSS AUTOMATICO =====
+info "Dalfox - Varredura XSS automatizada..."
+if [ "$WEB_ATIVO" = "1" ] && command -v dalfox &>/dev/null && verificar_conexao "$ALVO"; then
+  dalfox url "$ALVO" --silence --no-color --depth 2 --delay 500 --only-poc -o /dev/null 2>/dev/null | head -20 || aviso "dalfox falhou"
+fi
+
+# ===== PASSO 22.6: CLOUD STORAGE DISCOVERY =====
+progresso "Cloud Storage - S3 / Azure / GCP" 2
+if [ "$WEB_ATIVO" = "1" ]; then
+  base=$(echo "$DOMINIO" | sed -E 's/^www\.//' | cut -d. -f1)
+  echo ""
+  echo "=== Cloud Storage Discovery ==="
+  # AWS S3
+  for name in "$DOMINIO" "$base" "${base}-backup" "${base}-data" "${base}-dev" "${base}-prod" "${base}-storage" "${base}-assets" "${base}-uploads"; do
+    s3code=$(curl_rapido -o /dev/null -w "%{http_code}" --max-time 5 "https://${name}.s3.amazonaws.com" 2>/dev/null)
+    [ "$s3code" = "200" ] && critico "S3 BUCKET ACESSIVEL: https://${name}.s3.amazonaws.com"
+  done
+  # Azure Blob
+  for name in "$DOMINIO" "$base" "${base}backup" "${base}data" "${base}dev"; do
+    azcode=$(curl_rapido -o /dev/null -w "%{http_code}" --max-time 5 "https://${name}.blob.core.windows.net" 2>/dev/null)
+    [ "$azcode" != "000" ] && [ "$azcode" != "404" ] && aviso "Azure Blob encontrado: ${name}.blob.core.windows.net (HTTP $azcode)"
+  done
+  # Firebase
+  fbcode=$(curl_rapido -o /dev/null -w "%{http_code}" --max-time 5 "https://${base}.firebaseio.com/.json" 2>/dev/null)
+  [ "$fbcode" = "200" ] && critico "FIREBASE EXPOSED: https://${base}.firebaseio.com/.json"
+  # DigitalOcean Spaces
+  docode=$(curl_rapido -o /dev/null -w "%{http_code}" --max-time 5 "https://${base}.nyc3.digitaloceanspaces.com" 2>/dev/null)
+  [ "$docode" != "000" ] && [ "$docode" != "404" ] && aviso "DO Space: ${base}.nyc3.digitaloceanspaces.com (HTTP $docode)"
+  echo "==============================="
+fi
+
+# ===== PASSO 22.7: RACE CONDITION =====
+progresso "Race Condition - Requests simultaneos" 2
+if [ "$WEB_ATIVO" = "1" ] && verificar_conexao "$ALVO"; then
+  echo ""
+  echo "=== Race Condition Check ==="
+  for endpoint in "/" "/login" "/api" "/admin" "/reset" "/coupon" "/checkout"; do
+    pids=()
+    start=$(date +%s%N)
+    for i in 1 2 3 4 5; do
+      curl_rapido -L -o /dev/null -w "%{http_code}\n" --max-time 5 "$ALVO$endpoint" &
+      pids+=($!)
+    done
+    wait "${pids[@]}" 2>/dev/null
+    elapsed=$(( ($(date +%s%N) - start) / 1000000 ))
+    echo "  $endpoint: $elapsed ms (5 requests)"
+  done
+  echo "==============================="
+fi
 
 # ===== PASSO 23: METASPLOIT - SCANNERS AUXILIARES =====
 progresso "Metasploit - Rodando scanners auxiliares" 2
