@@ -373,6 +373,8 @@ verificar_versoes() {
 # ISSUE 4: AUTO-UPDATE
 # ============================================================
 verificar_atualizacao() {
+  [ -z "$VERSAO_SCR" ] && VERSAO_SCR="1.0.0"
+  [ -z "$URL_GIT" ] && URL_GIT="https://api.github.com/repos/derambrplays/DeepRecon/releases/latest"
   echo -e "${CYAN}Verificando atualizacoes...${RESET}"
   VERSAO_GIT=$(curl_rapido "$URL_GIT" 2>/dev/null | grep '"tag_name"' | head -1 | grep -oP 'v?\d+\.\d+\.\d+')
   [ -z "$VERSAO_GIT" ] && { info "Nao foi possivel verificar atualizacoes (offline?)"; return 0; }
@@ -380,9 +382,14 @@ verificar_atualizacao() {
     echo -e "${YELLOW}Nova versao disponivel: $VERSAO_GIT (atual: $VERSAO_SCR)${RESET}"
     echo -ne "${YELLOW}Atualizar agora? (S/n): ${RESET}"; read -r resp
     [[ "$resp" != "n" && "$resp" != "N" ]] && {
-      git pull origin main 2>/dev/null || git pull origin master 2>/dev/null && {
-        echo -e "${GREEN}Atualizado! Execute o script novamente.${RESET}"; exit 0
-      } || aviso "Falha ao atualizar. Faca git pull manualmente."
+      git pull origin main 2>/dev/null || git pull origin master 2>/dev/null
+      local pull_ok=$?
+      if [ "$pull_ok" -eq 0 ]; then
+        echo -e "${GREEN}Atualizado! Execute o script novamente.${RESET}"
+        exit 0
+      else
+        aviso "Falha ao atualizar. Execute: git pull"
+      fi
     }
   else
     info "DeepRecon $VERSAO_SCR atualizado"
@@ -617,6 +624,9 @@ verificar_versoes
 echo ""
 loading_bar 3 "Preparando modulos"
 echo ""
+
+# Auto-update
+verificar_atualizacao
 
 # ============================================================
 # MODO DE SCAN + RUÍDO
