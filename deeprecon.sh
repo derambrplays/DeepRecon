@@ -298,10 +298,13 @@ valida_ferramenta() {
 }
 
 verificar_conexao() {
-  local alvo="$1" dominio="${2:-$alvo}"
+  local alvo="$1" dominio="${2:-$(echo "$alvo" | sed 's|https\?://||' | cut -d/ -f1 | cut -d: -f1)}"
+  # Verifica DNS primeiro (tenta 3 resolvedores)
+  if ! host "$dominio" &>/dev/null && ! nslookup "$dominio" &>/dev/null && ! dig +short "$dominio" &>/dev/null; then
+    return 2
+  fi
   local code=$(curl_rapido -o /dev/null -w "%{http_code}" --connect-timeout 5 --max-time 8 "$alvo" 2>/dev/null)
   if [ -z "$code" ] || [ "$code" = "000" ]; then
-    aviso "Alvo $alvo inalcancavel - pulando scans intensivos"
     return 1
   fi
   return 0
@@ -903,7 +906,11 @@ sleep 3
 # ============================================================
 for ALVO in "${ALVOS[@]}"; do
 
+# Valida se o alvo nao esta vazio
+[ -z "$ALVO" ] && { aviso "Alvo vazio - pulando"; continue; }
+
 DOMINIO=$(echo "$ALVO" | sed 's|https\?://||' | cut -d/ -f1 | cut -d: -f1)
+[ -z "$DOMINIO" ] && { aviso "Dominio invalido extraido de '$ALVO' - pulando"; continue; }
 PORTA=$(echo "$ALVO" | sed 's|https\?://||' | cut -d/ -f1 | grep -o ':[0-9]*$' | tr -d ':')
 [ -z "$PORTA" ] && [ "$PROTOCOLO" = "https" ] && PORTA=443
 [ -z "$PORTA" ] && PORTA=80
@@ -1000,8 +1007,18 @@ echo -e "${MAGENTA}${BOLD}╚═════════════════
 echo ""
 
 # === VALIDACAO DE CONEXAO ===
-if ! verificar_conexao "$ALVO"; then
-  aviso "Alvo inalcancavel - continuando com info limitada"
+verificar_conexao "$ALVO"; CONEXAO_RC=$?
+if [ "$CONEXAO_RC" = "2" ]; then
+  echo -e "\n${RED}${BOLD}╔══════════════════════════════════════════════════╗${RESET}"
+  echo -e "${RED}${BOLD}║     DOMINIO NAO RESOLVE - ALVO INVALIDO         ║${RESET}"
+  echo -e "${RED}${BOLD}╚══════════════════════════════════════════════════╝${RESET}"
+  echo -e "${YELLOW}[!] $DOMINIO nao existe ou nao respondeu a consulta DNS${RESET}"
+  aviso "Pulando $ALVO - dominio invalido"
+  continue
+elif [ "$CONEXAO_RC" = "1" ]; then
+  echo -e "\n${YELLOW}${BOLD}╔══════════════════════════════════════════════════╗${RESET}"
+  echo -e "${YELLOW}${BOLD}║       ALVO INACESSIVEL - INFO LIMITADA         ║${RESET}"
+  echo -e "${YELLOW}${BOLD}╚══════════════════════════════════════════════════╝${RESET}"
 fi
 # === ESCOPO ===
 SCOPE_DOMAIN="$DOMINIO"
