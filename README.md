@@ -169,6 +169,11 @@ cat /tmp/DeepRecon_*.json | jq .  # JSON (requer jq)
 - Rede média (>80ms): fator 0.6
 - Rede rápida (<80ms): fator 1.0
 - Impede notebook potente em Wi-Fi de hotel de queimar a conexão com 30 threads
+- **Garantia de piso**: valores fracionados ou menores que 1 são arredondados para 1 — evita `nmap --min-rate 0` ou loops quebrados com `0 threads`
+
+### 5a. Colisão Rate Limit + Rede (Corrigido)
+- O script tinha dois mecanismos que tentavam controlar a velocidade: o modo (Furtivo/Médio/Bruto) limitava `TOOL_THREADS`, e a latência de rede reduzia `THREADS` via multiplicador — o conflito acontecia quando `THREADS` virava valor fracionado (<1) e o `sed 's/\..*//'` produzia string vazia, reativando o fallback `THREADS=5` (contra-intuitivo: rede lenta + máquina fraca subia de 1 para 5 threads)
+- **Fix**: `bc -l` com `scale=0` + divisão por 1 faz truncamento limpo; fallback vai para 1 (não 5); guarda `[ "$THREADS" -lt 1 ]` garante piso mínimo de 1 thread
 
 ### 6. SQLMap com timeout — não trava o script
 - Cada chamada do SQLMap (GET, forms, cookie) tem **timeout de 120s**

@@ -157,8 +157,8 @@ elif [ "$(echo "$NET_LATENCY > 80" | bc -l 2>/dev/null)" = "1" ]; then
 else
   NET_NIVEL="ALTO"; NET_FATOR=1.0
 fi
-THREADS=$(echo "$THREADS * $NET_FATOR" | bc 2>/dev/null | sed 's/\..*//')
-[ -z "$THREADS" ] && THREADS=5
+THREADS=$(echo "scale=0; $THREADS * $NET_FATOR / 1" | bc -l 2>/dev/null)
+[ -z "$THREADS" ] && THREADS=1
 [ "$THREADS" -lt 1 ] && THREADS=1
 
 # ============================================================
@@ -968,8 +968,8 @@ case "$ops_op" in
       else
         NET_NIVEL="ALTO"; NET_FATOR=1.0
       fi
-      THREADS=$(echo "$THREADS * $NET_FATOR" | bc 2>/dev/null | sed 's/\..*//')
-      [ -z "$THREADS" ] && THREADS=5; [ "$THREADS" -lt 1 ] && THREADS=1
+      THREADS=$(echo "scale=0; $THREADS * $NET_FATOR / 1" | bc -l 2>/dev/null)
+      [ -z "$THREADS" ] && THREADS=1; [ "$THREADS" -lt 1 ] && THREADS=1
       echo -e "  ${CYAN}Latencia via proxy: ${NET_LATENCY}ms -> threads ajustadas para ${THREADS}${RESET}"
     fi ;;
   i|I)
