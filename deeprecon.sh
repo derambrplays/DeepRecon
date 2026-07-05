@@ -401,8 +401,19 @@ valida_ferramenta() {
 
 verificar_conexao() {
   local alvo="$1" dominio="${2:-$(echo "$alvo" | sed 's|https\?://||' | cut -d/ -f1 | cut -d: -f1)}"
-  # Verifica DNS primeiro (tenta 3 resolvedores)
-  if ! host "$dominio" &>/dev/null && ! nslookup "$dominio" &>/dev/null && ! dig +short "$dominio" &>/dev/null; then
+  # Se tem ferramentas DNS instaladas, tenta resolver
+  local dns_ok=1
+  if command -v host &>/dev/null || command -v nslookup &>/dev/null || command -v dig &>/dev/null; then
+    if (command -v host &>/dev/null && host "$dominio" &>/dev/null) || \
+       (command -v nslookup &>/dev/null && nslookup "$dominio" &>/dev/null) || \
+       (command -v dig &>/dev/null && dig +short "$dominio" &>/dev/null); then
+      dns_ok=0
+    fi
+  else
+    # Sem ferramentas DNS, ignora validacao DNS e tenta HTTP direto
+    dns_ok=0
+  fi
+  if [ "$dns_ok" != "0" ]; then
     return 2
   fi
   local code=$(curl_rapido -o /dev/null -w "%{http_code}" --connect-timeout 5 --max-time 8 "$alvo" 2>/dev/null)
