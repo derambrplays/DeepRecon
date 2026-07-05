@@ -1064,7 +1064,8 @@ case "$ops_op" in
   d|D)
     echo -e "${YELLOW}[!] Modo direto: SEM anonimato. Usando IP real.${RESET}"
     PROXY=""; PROXY_TIPO="nenhum"; ANON_MODE=0
-    unset http_proxy https_proxy HTTP_PROXY HTTPS_PROXY ALL_PROXY all_proxy ;;
+    unset http_proxy https_proxy HTTP_PROXY HTTPS_PROXY ALL_PROXY all_proxy
+    break ;;
   *)
     break ;;
 esac
