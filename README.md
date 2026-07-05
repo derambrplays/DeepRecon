@@ -1,6 +1,6 @@
 # DeepRecon 🔍
 
-Scanner de vulnerabilidades web completo com **42 passos automatizados**, score heurístico de risco (Joguin IA), análise SSL (A-F), relatórios TXT/HTML/JSON, integração Metasploit, menu de ataque pos-scan e detecção adaptativa de hardware/rede.
+Scanner de vulnerabilidades web completo com **43 passos automatizados**, score heurístico de risco (Joguin IA), análise SSL (A-F), relatórios TXT/HTML/JSON, integração Metasploit, menu de ataque pos-scan e detecção adaptativa de hardware/rede.
 
 ## Instalação
 
@@ -94,7 +94,8 @@ cat /tmp/DeepRecon_*.json | jq .  # JSON (requer jq)
 
 ## Funcionalidades
 
-- **42 passos automatizados** de reconhecimento e exploração
+- **43 passos automatizados** de reconhecimento e exploração
+- **Análise de provedor**: detecta 12 CDN/provedores com % de chance de detecção, requests até bloqueio, comportamento do WAF e bypass recomendado
 - **Menu de ataque pos-scan**: 10 ferramentas de invasão (Metasploit, SQLMap, Medusa, Ncrack, Ettercap, DDoS, Nmap custom, Bettercap, Hydra, hping3)
 - **Trap de segurança**: Ctrl+C só mata a ferramenta atual, não o script inteiro
 - **Safe run**: monitoramento de processo com timeout, detecção de idle e cancelamento controlado
@@ -112,6 +113,7 @@ cat /tmp/DeepRecon_*.json | jq .  # JSON (requer jq)
 - **WebSocket discovery**: varre endpoints WS/WSS comuns
 - **Nuclei**: templates CVE atualizados pela comunidade
 - **Race condition**: requests simultâneos em endpoints críticos
+- **Provider analysis**: detecta CDN/provedor e mostra % de chance de detecção, requests até bloqueio, comportamento do WAF e bypass recomendado
 - **Joguin IA**: score heurístico de risco com CVSS 3.1, cadeias de ataque, quick wins, roadmap de remediação (não é LLM — sem alucinações)
 - **Metasploit**: 7 scanners auxiliares integrados
 - **SSL Grade**: classificação A+ a F estilo SSL Labs
@@ -120,6 +122,12 @@ cat /tmp/DeepRecon_*.json | jq .  # JSON (requer jq)
 - **HTML Report**: relatório visual profissional com CSS dark mode
 - **JSON Export**: saída estruturada para ferramentas externas
 - **Relatório pós-ataque**: exibe resultados completos após o menu de ataque
+- **OPSEC integrado**: aviso de IP real, configuração de proxy SOCKS5/HTTP com teste de conectividade, rotação de User-Agent a cada request
+- **Detecção de bloqueio**: WAF detection no curl com contador — após 5 bloqueios, encerra o scan com recomendações
+- **Checkpoint system**: salva progresso do scan e permite retomar de onde parou
+- **Instalador de dependências**: menu interativo que baixa todas as Go tools (gau, katana, dalfox, waybackurls, gowitness)
+- **Cleanup automático**: trap EXIT apaga todos arquivos temporários ao sair
+- **Jitter no rate limit**: delay aleatório (800-1200ms) em vez de fixo, evitando padrão robótico
 - **Verificação de atualizações**: tela com spinner animado + auto-update
 - **Hardware Detection**: ajusta threads automaticamente (5/15/30) baseado em CPU/RAM
 - **Loading Bar**: barra de progresso visual com percentual
