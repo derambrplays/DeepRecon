@@ -75,6 +75,7 @@ Pula o menu interativo e inicia o scan imediatamente.
 | 40 | SSL Grade (A-F) | Classificação SSL Labs style com pontos por TLS, HSTS, PFS, ciphers |
 | 41 | JSON Export | Gera relatório estruturado em JSON |
 | 42 | HTML Report | Relatório visual profissional com CSS e barra de risco |
+| 43 | Checkpoint + Provider Analysis | Análise de CDN/provedor com % de detecção + salvamento de progresso |
 
 ## Relatórios
 
@@ -193,6 +194,25 @@ cat /tmp/DeepRecon_*.json | jq .  # JSON (requer jq)
 - Bug de sintaxe corrigido: heredoc duplo substituído por template com placeholders + `sed`
 - Nmap `else` ausente: "Nmap não disponível" agora só aparece quando nmap realmente não está instalado
 - `bash -n` limpo em todas as versões
+
+### 11. Latencia Re-testada após Configuração de Proxy
+- O teste de rede inicial pingava 8.8.8.8 direto (~15ms), mas se o usuário ativasse Tor/SOCKS5 depois, o script mantinha 30 threads — causando timeout em massa
+- Agora ao configurar proxy com sucesso, o script re-testa latência contra 3 endpoints via proxy e recalcula `THREADS` dinamicamente
+
+### 12. Detecção de Bloqueio WAF em Ferramentas Externas
+- O contador `BLOQUEIO_CONT` só monitorava `curl_rapido()` — Gobuster, FFUF, SQLMap, Nikto, Nuclei faziam conexões próprias e ignoravam o contador
+- Agora `roda()` escaneia o stdout completo de qualquer ferramenta por padrões de bloqueio (403, challenge, cloudflare, denied)
+- Processos paralelos em background também têm seus arquivos `.out` inspecionados antes de exibir
+
+### 13. Rate Limit/Jitter Aplicado a Ferramentas Externas
+- O `sleep` bash só atrasava entre `curl_rapido` — Gobuster, FFUF, WFuzz (Go/C++ puro) ignoravam o jitter, disparando rajadas limpas
+- FFUF agora recebe `-rate` calculado do `RATE_LIMIT_MS`
+- WFuzz recebe `-t` com limite de threads
+- `TOOL_THREADS` reduzido (3/8/15) e cortado pela metade com proxy ativo
+
+### 14. PATH Corrigido ao Executar com Sudo
+- `go install` instala em `~/go/bin/`, mas com `sudo ./deeprecon.sh` o `$HOME` vira `/root` — tools não eram encontradas
+- Agora detecta `SUDO_USER`, resolve o home original via `getent` e adiciona `$USER_HOME/go/bin` ao PATH
 
 ## Requisitos
 

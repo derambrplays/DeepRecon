@@ -13,6 +13,13 @@
 # ============================================================
 
 export PATH="$HOME/go/bin:$HOME/.local/bin:$PATH"
+# Se rodou com sudo, garante que acha as Go tools do usuario original
+[ -n "$SUDO_USER" ] && {
+  USER_HOME=$(getent passwd "$SUDO_USER" 2>/dev/null | cut -d: -f6)
+  if [ -n "$USER_HOME" ] && [ "$USER_HOME" != "$HOME" ]; then
+    export PATH="$USER_HOME/go/bin:$USER_HOME/.local/bin:$PATH"
+  fi
+}
 
 # ── CLEANUP: apaga temporarios ao sair ──
 _CLEANUP_DIRS=()
@@ -174,8 +181,20 @@ loading_bar() {
 # ============================================================
 roda() {
   local tool="$1"; shift
-  local rc=0; "$@" || rc=$?
-  [ "$rc" -ne 0 ] && echo -e "  ${YELLOW}[!] '$tool' falhou (exit $rc)${RESET}" >&2
+  local rc=0; local out; out=$("$@" 2>&1) || rc=$?
+  # Detecta bloqueio WAF na saida da ferramenta externa
+  if echo "$out" | grep -qiE "blocked|access.denied|challenge|attention.required|cf-browser-verification|incapsula|403 forbidden|your.ip.has.been.blocked|cloudflare|waf.denied"; then
+    BLOQUEIO_CONT=$((BLOQUEIO_CONT + 1))
+    aviso "Possivel bloqueio detectado na ferramenta '$tool' (${BLOQUEIO_CONT}/${MAX_BLOQUEIO})"
+    [ "$BLOQUEIO_CONT" -ge "$MAX_BLOQUEIO" ] && {
+      echo -e "\n${RED}${BOLD}╔══════════════════════════════════════════════════╗${RESET}"
+      echo -e "${RED}${BOLD}║     BLOQUEIO DETECTADO EM FERRAMENTA EXTERNA    ║${RESET}"
+      echo -e "${RED}${BOLD}╚══════════════════════════════════════════════════╝${RESET}"
+      aviso "IP bloqueado - encerrando scan para $ALVO"
+      BLOQUEIO_CONT=0; return 1
+    }
+  fi
+  echo "$out"
   return $rc
 }
 curl_rapido() {
@@ -929,6 +948,29 @@ case "$ops_op" in
       echo -ne "${YELLOW}Continuar sem proxy? (S/n): ${RESET}"; read -r sem_proxy
       [[ "$sem_proxy" = "n" || "$sem_proxy" = "N" ]] && exit 1
       PROXY=""; PROXY_TIPO="nenhum"
+    else
+      # Re-testa latencia COM o proxy (Tor/SOCKS sao mais lentos)
+      echo -e "${YELLOW}[!] Re-testando latencia com proxy ativo...${RESET}"
+      _proxy_urls=("https://1.1.1.1" "https://8.8.8.8" "https://google.com")
+      _proxy_lat=999
+      for _p_url in "${_proxy_urls[@]}"; do
+        _p_time=$(curl -s --proxy "$PROXY" --connect-timeout 10 --max-time 15 -o /dev/null -w "%{time_total}" "$_p_url" 2>/dev/null)
+        _p_time="${_p_time:-999}"
+        _p_time=$(echo "$_p_time * 1000" | bc 2>/dev/null | sed 's/\..*//')
+        [ -z "$_p_time" ] && _p_time=999
+        [ "$_p_time" -lt "$_proxy_lat" ] && _proxy_lat=$_p_time
+      done
+      NET_LATENCY=$_proxy_lat
+      if [ "$(echo "$NET_LATENCY > 500" | bc -l 2>/dev/null)" = "1" ] || [ "$NET_LATENCY" = "999" ]; then
+        NET_NIVEL="BAIXO"; NET_FATOR=0.3
+      elif [ "$(echo "$NET_LATENCY > 200" | bc -l 2>/dev/null)" = "1" ]; then
+        NET_NIVEL="MEDIO"; NET_FATOR=0.6
+      else
+        NET_NIVEL="ALTO"; NET_FATOR=1.0
+      fi
+      THREADS=$(echo "$THREADS * $NET_FATOR" | bc 2>/dev/null | sed 's/\..*//')
+      [ -z "$THREADS" ] && THREADS=5; [ "$THREADS" -lt 1 ] && THREADS=1
+      echo -e "  ${CYAN}Latencia via proxy: ${NET_LATENCY}ms -> threads ajustadas para ${THREADS}${RESET}"
     fi ;;
   i|I)
     echo -e "\n${CYAN}Instalando dependencias...${RESET}"
@@ -1065,11 +1107,17 @@ case $MODO_ESCOLHA in
 esac
 
 # Calcula threads das ferramentas baseado no rate limit
-if [ "$RATE_LIMIT_MS" -ge 500 ]; then TOOL_THREADS=5
-elif [ "$RATE_LIMIT_MS" -ge 200 ]; then TOOL_THREADS=15
-else TOOL_THREADS=30
+if [ "$RATE_LIMIT_MS" -ge 500 ]; then TOOL_THREADS=3
+elif [ "$RATE_LIMIT_MS" -ge 200 ]; then TOOL_THREADS=8
+else TOOL_THREADS=15
 fi
 TOOL_THREADS=$(( TOOL_THREADS < THREADS ? TOOL_THREADS : THREADS ))
+# Se tiver proxy ativo, reduz ainda mais (Tor/SOCKS nao aguenta muitos threads)
+[ -n "$PROXY" ] && TOOL_THREADS=$(( TOOL_THREADS / 2 + 1 ))
+# Calcula rate para ffuf (max req/s)
+FFUF_RATE=$(( 1000 / (RATE_LIMIT_MS + 1) ))
+[ "$FFUF_RATE" -lt 1 ] && FFUF_RATE=1
+[ "$FFUF_RATE" -gt 20 ] && FFUF_RATE=20
 
 # modo custom: selecao passo a passo
 if [ "$MODO" = "custom" ]; then
@@ -1424,7 +1472,7 @@ if [ "$WEB_ATIVO" = "1" ] && valida_ferramenta "gobuster" && verificar_conexao "
     [ ! -f "$WORDLIST" ] && WORDLIST="/usr/share/wordlists/dirb/common.txt"
   fi
   if [ -f "$WORDLIST" ]; then
-    (gobuster dir -u "$ALVO" -w "$WORDLIST" -t "$TOOL_THREADS" -q -s 200,301,302,403,401 -x php,txt,html,bak,zip,tar,sql,json,xml 2>/dev/null || aviso "gobuster falhou") | head -50
+    (gobuster dir -u "$ALVO" -w "$WORDLIST" -t "$TOOL_THREADS" -q -s 200,301,302,403,401 -x php,txt,html,bak,zip,tar,sql,json,xml --timeout 5s 2>/dev/null || aviso "gobuster falhou") | head -50
   fi
 fi
 
@@ -1513,7 +1561,7 @@ if [ "$WEB_ATIVO" = "1" ] && valida_ferramenta "ffuf" && verificar_conexao "$ALV
     WL="/usr/share/wordlists/dirb/common.txt"
   fi
   if [ -f "$WL" ]; then
-    (ffuf -u "$ALVO/FUZZ" -w "$WL" -t "$TOOL_THREADS" -c -s -fc 404,403 2>/dev/null || aviso "ffuf falhou") | head -40
+    (ffuf -u "$ALVO/FUZZ" -w "$WL" -t "$TOOL_THREADS" -rate "$FFUF_RATE" -c -s -fc 404,403 2>/dev/null || aviso "ffuf falhou") | head -40
   fi
 fi
 
@@ -1524,7 +1572,7 @@ if [ "$WEB_ATIVO" = "1" ] && [ "$MODO_SEGURO" != "1" ] && valida_ferramenta "wfu
   if [ -n "$PARAM" ]; then
     wl="/usr/share/wordlists/dirb/common.txt"
     [ "$MODO" = "furtivo" ] && wl=$(mini_wordlist) && info "Modo furtivo: wordlist mini"
-    (wfuzz -c -z file,"$wl" -u "${ALVO}?FUZZ=1" --hc 404 2>/dev/null || aviso "wfuzz falhou") | head -15
+    (wfuzz -c -z file,"$wl" -u "${ALVO}?FUZZ=1" -t "$TOOL_THREADS" --hc 404 2>/dev/null || aviso "wfuzz falhou") | head -15
   fi
 else
   [ "$MODO_SEGURO" = "1" ] && info "WFuzz pulado pelo modo seguro"
@@ -1610,9 +1658,23 @@ PID18=$!
 # Aguarda todos os passos paralelos
 wait $PID10 $PID11 $PID14 $PID16 $PID16H $PID17 $PID18 2>/dev/null
 
-# Exibe saidas na ordem
+# Exibe saidas na ordem e detecta bloqueio
 for num in 10 11 14 16hydra 16 17 18; do
-  [ -f "$PAR_DIR/$num.out" ] && cat "$PAR_DIR/$num.out"
+  if [ -f "$PAR_DIR/$num.out" ]; then
+    cat "$PAR_DIR/$num.out"
+    if grep -qiE "blocked|access.denied|challenge|attention.required|cf-browser-verification|incapsula|403 forbidden|your.ip.has.been.blocked|cloudflare|waf.denied" "$PAR_DIR/$num.out" 2>/dev/null; then
+      BLOQUEIO_CONT=$((BLOQUEIO_CONT + 1))
+      aviso "Bloqueio detectado no passo $num (${BLOQUEIO_CONT}/${MAX_BLOQUEIO})"
+      [ "$BLOQUEIO_CONT" -ge "$MAX_BLOQUEIO" ] && {
+        echo -e "\n${RED}${BOLD}╔══════════════════════════════════════════════════╗${RESET}"
+        echo -e "${RED}${BOLD}║     BLOQUEIO DETECTADO EM FERRAMENTA EXTERNA    ║${RESET}"
+        echo -e "${RED}${BOLD}╚══════════════════════════════════════════════════╝${RESET}"
+        aviso "IP bloqueado - encerrando scan para $ALVO"
+        BLOQUEIO_CONT=0
+        break
+      }
+    fi
+  fi
   rm -f "$PAR_DIR/$num.out" 2>/dev/null
 done
 rm -rf "$PAR_DIR" 2>/dev/null
