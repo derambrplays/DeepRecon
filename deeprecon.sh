@@ -14,6 +14,40 @@
 
 export PATH="$HOME/go/bin:$HOME/.local/bin:$PATH"
 
+# ── CLEANUP: apaga temporarios ao sair ──
+_CLEANUP_DIRS=()
+cleanup_exit() {
+  local d
+  for d in "${_CLEANUP_DIRS[@]}"; do [ -d "$d" ] && rm -rf "$d" 2>/dev/null; done
+  echo -e "\n${BLUE}[i] Limpeza concluida${RESET}"
+}
+trap cleanup_exit EXIT
+
+# ── USER-AGENTS rotativos ──
+UA_LIST=(
+  "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/125.0.0.0 Safari/537.36"
+  "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/125.0.0.0 Safari/537.36"
+  "Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/125.0.0.0 Safari/537.36"
+  "Mozilla/5.0 (Windows NT 10.0; Win64; x64; rv:126.0) Gecko/20100101 Firefox/126.0"
+  "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/17.5 Safari/605.1.15"
+  "Mozilla/5.0 (X11; Ubuntu; Linux x86_64; rv:126.0) Gecko/20100101 Firefox/126.0"
+)
+_UA_IDX=0
+proximo_ua() {
+  local ua="${UA_LIST[$_UA_IDX]}"
+  _UA_IDX=$(( (_UA_IDX + 1) % ${#UA_LIST[@]} ))
+  echo "$ua"
+}
+
+# ── PROXY / TOR ──
+PROXY=""
+PROXY_TIPO="nenhum"
+
+# ── CHECKPOINT ──
+CHECKPOINT_FILE=""
+BLOQUEIO_CONT=0
+MAX_BLOQUEIO=5
+
 RED='\033[1;31m'
 GREEN='\033[1;32m'
 YELLOW='\033[1;33m'
@@ -146,9 +180,31 @@ roda() {
 }
 curl_rapido() {
   local now=$(date +%s); local diff=$((now - _LAST_CURL))
-  [ "$RATE_LIMIT_MS" -gt 0 ] 2>/dev/null && { [ "$((RATE_LIMIT_MS / 1000))" -gt "$diff" ] 2>/dev/null && sleep $((RATE_LIMIT_MS / 1000 - diff)); }
+  local jitter=$(( RANDOM % 400 + (RATE_LIMIT_MS - 200) ))
+  [ "$RATE_LIMIT_MS" -gt 0 ] 2>/dev/null && { [ "$((jitter / 1000))" -gt "$diff" ] 2>/dev/null && sleep $((jitter / 1000 - diff)); }
   _LAST_CURL=$now
-  curl --connect-timeout 5 --max-time 10 -s "$@"
+  local ua=$(proximo_ua)
+  local proxy_args=()
+  [ -n "$PROXY" ] && proxy_args=("--proxy" "$PROXY")
+  local out=$(curl --connect-timeout 5 --max-time 10 -s -A "$ua" "${proxy_args[@]}" "$@" 2>/dev/null)
+  # Detecta bloqueio
+  local code=$(echo "$out" | head -1 | grep -oE '[0-9]{3}' | head -1 || echo "")
+  echo "$out" | grep -qiE "blocked|access.denied|challenge|attention.required|cf-browser-verification|incapsula|403 forbidden|your.ip.has.been.blocked" && {
+    BLOQUEIO_CONT=$((BLOQUEIO_CONT + 1))
+    [ "$BLOQUEIO_CONT" -ge "$MAX_BLOQUEIO" ] && {
+      echo -e "\n${RED}${BOLD}╔══════════════════════════════════════════════════╗${RESET}"
+      echo -e "${RED}${BOLD}║         BLOQUEIO DETECTADO PELO WAF!           ║${RESET}"
+      echo -e "${RED}${BOLD}╠══════════════════════════════════════════════════╣${RESET}"
+      echo -e "${RED}${BOLD}║${RESET}  O alvo bloqueou este IP apos $MAX_BLOQUEIO deteccoes.   ${RED}${BOLD}║${RESET}"
+      echo -e "${RED}${BOLD}║${RESET}  Recomendado: trocar de IP (VPN/proxy) e usar${RED}${BOLD}║${RESET}"
+      echo -e "${RED}${BOLD}║${RESET}  modo FURTIVO com delay > 1500ms.           ${RED}${BOLD}║${RESET}"
+      echo -e "${RED}${BOLD}╚══════════════════════════════════════════════════╝${RESET}"
+      aviso "IP bloqueado apos $BLOQUEIO_CONT bloqueios - encerrando scan para $ALVO"
+      BLOQUEIO_CONT=0
+      return 1
+    }
+  }
+  echo "$out"
 }
 html_encode() { sed 's/&/\&amp;/g; s/</\&lt;/g; s/>/\&gt;/g; s/"/\&quot;/g; s/'\''/\&#39;/g'; }
 gerar_html_report() {
@@ -360,6 +416,23 @@ limpar_temporarios() {
     find "$rdir" -name "*.html" -mtime +7 -delete 2>/dev/null
     find "$rdir" -type d -empty -mtime +1 -delete 2>/dev/null
   }
+}
+
+# ── CHECKPOINT system ──
+checkpoint_save() {
+  [ -z "$CHECKPOINT_FILE" ] && CHECKPOINT_FILE="/tmp/.deeprecon_checkpoint_${DOMINIO:-unknown}.txt"
+  echo "$ALVO|$PASSO_ATUAL|$NOISE_ACUM|$DOMINIO" > "$CHECKPOINT_FILE"
+}
+checkpoint_load() {
+  [ ! -f "$CHECKPOINT_FILE" ] && return 1
+  IFS='|' read -r ck_alvo ck_passo ck_noise ck_dominio < "$CHECKPOINT_FILE"
+  [ "$ck_alvo" != "$ALVO" ] && return 1
+  echo -e "${YELLOW}[!] Checkpoint encontrado: passo $ck_passo para $ck_alvo${RESET}"
+  echo -ne "${YELLOW}Continuar de onde parou? (S/n): ${RESET}"; read -r resp
+  [[ "$resp" = "n" || "$resp" = "N" ]] && { rm -f "$CHECKPOINT_FILE"; return 1; }
+  PASSO_ATUAL=$ck_passo; NOISE_ACUM=$ck_noise
+  info "Retomando do passo $PASSO_ATUAL"
+  return 0
 }
 
 # Fix 6: Validacao de escopo
@@ -612,27 +685,112 @@ login_automatico() {
 }
 
 detectar_nuvem() {
-  local ip="$1" headers="$2"
-  echo "$headers" | grep -qiE "cf-ray|__cfduid|cf-cache-status|x-amz-cf-id|x-amz-request-id|x-robots-tag.*cloudflare|server.*cloudflare|server.*akamai|server.*incapsula|x-guploader" && {
+  local ip="$1" headers="$2" provedor="" risco="" chance=""
+
+  # Mapa de provedores, indicadores, chance de deteccao e risco
+  if echo "$headers" | grep -qiE "cf-ray|__cfduid|cf-cache-status|server.*cloudflare|x-robots-tag.*cloudflare"; then
+    provedor="Cloudflare"; chance="92"; risco="ALTO"
+  elif echo "$headers" | grep -qiE "x-amz-cf-id|x-amz-request-id|server.*cloudfront|via.*cloudfront"; then
+    provedor="AWS CloudFront"; chance="85"; risco="ALTO"
+  elif echo "$headers" | grep -qiE "server.*akamai|akamai-x-cache|X-Akamai|X-Akamai-*"; then
+    provedor="Akamai"; chance="88"; risco="ALTO"
+  elif echo "$headers" | grep -qiE "server.*incapsula|x-incapsula|x-ic-*"; then
+    provedor="Incapsula"; chance="90"; risco="ALTO"
+  elif echo "$headers" | grep -qiE "x-guploader|x-goog-*|server.*gfe|via.*google"; then
+    provedor="Google Cloud"; chance="78"; risco="MEDIO"
+  elif echo "$headers" | grep -qiE "x-azure-*|azure.*cdn|x-served-by.*azure"; then
+    provedor="Azure CDN"; chance="75"; risco="MEDIO"
+  elif echo "$headers" | grep -qiE "x-fastly|via.*fastly|server.*fastly"; then
+    provedor="Fastly"; chance="80"; risco="MEDIO"
+  elif echo "$headers" | grep -qiE "x-stackpath|server.*stackpath|via.*stackpath"; then
+    provedor="StackPath"; chance="70"; risco="MEDIO"
+  elif echo "$headers" | grep -qiE "server.*ovh|x-ovh-*"; then
+    provedor="OVH"; chance="45"; risco="BAIXO"
+  elif echo "$headers" | grep -qiE "x-diaspro|server.*arvan|via.*arvan"; then
+    provedor="ArvanCloud"; chance="72"; risco="MEDIO"
+  elif echo "$headers" | grep -qiE "x-sucuri|x-sucuri-*"; then
+    provedor="Sucuri"; chance="82"; risco="ALTO"
+  elif echo "$headers" | grep -qiE "x-cache.*nginx|server.*nginx.*proxy|via.*varnish"; then
+    provedor="Nginx Proxy / Varnish"; chance="55"; risco="BAIXO"
+  fi
+
+  if [ -n "$provedor" ]; then
     echo -e "  ${RED}╔══════════════════════════════════════════════════╗${RESET}"
-    echo -e "  ${RED}║${RESET}  ${BOLD}ALERTA: NUVEM DETECTADA!${RESET}                    ${RED}║${RESET}"
-    echo -e "  ${RED}║${RESET}  O alvo pode estar atras de CDN/proxy de nuvem.  ${RED}║${RESET}"
-    echo -e "  ${RED}║${RESET}  ${YELLOW}EDoS RISK:${RESET} O volume de requisicoes pode       ${RED}║${RESET}"
-    echo -e "  ${RED}║${RESET}  esgotar recursos da nuvem e gerar ${BOLD}cobrancas${RESET}      ${RED}║${RESET}"
-    echo -e "  ${RED}║${RESET}  financeiras para o proprietario do site.        ${RED}║${RESET}"
+    echo -e "  ${RED}║${RESET}  ${BOLD}CDN / PROVEDOR DETECTADO${RESET}                   ${RED}║${RESET}"
+    echo -e "  ${RED}║${RESET}                                               ${RED}║${RESET}"
+    echo -e "  ${RED}║${RESET}  Provedor:     ${CYAN}${BOLD}$provedor${RESET}"
+    echo -e "  ${RED}║${RESET}  Chance de     ${YELLOW}${chance}%${RESET} de ser detectado     ${RED}║${RESET}"
+    echo -e "  ${RED}║${RESET}  deteccao:                               ${RED}║${RESET}"
+    echo -e "  ${RED}║${RESET}  Risco:        ${RED}$risco${RESET}"
+    echo -e "  ${RED}║${RESET}                                               ${RED}║${RESET}"
+
+    # Recomendacoes por provedor
+    case "$provedor" in
+      Cloudflare)
+        echo -e "  ${RED}║${RESET}  ${YELLOW}Cloudflare tem WAF agressivo + rate limit${RESET}     ${RED}║${RESET}"
+        echo -e "  ${RED}║${RESET}  ${YELLOW}apos ~50 requisicoes/min. Use --delay 1500ms${RESET}  ${RED}║${RESET}"
+        echo -e "  ${RED}║${RESET}  ${YELLOW}e rotate User-Agent a cada request.${RESET}          ${RED}║${RESET}"
+        echo -e "  ${RED}║${RESET}  ${YELLOW}UUAs recomendado: CloudScraper, curl_cffi${RESET}    ${RED}║${RESET}"
+        echo -e "  ${RED}║${RESET}  ${YELLOW}ou modo FURTIVO (delay 1s).${RESET}                 ${RED}║${RESET}"
+        echo -e "  ${RED}║${RESET}                                               ${RED}║${RESET}"
+        echo -e "  ${RED}║${RESET}  ${CYAN}Bloqueio esperado: Challenge JS + CAPTCHA${RESET}      ${RED}║${RESET}"
+        echo -e "  ${RED}║${RESET}  ${CYAN}Apos bloqueio: Erro 403 + cf-mitigated${RESET}         ${RED}║${RESET}"
+        ;;
+      "AWS CloudFront")
+        echo -e "  ${RED}║${RESET}  ${YELLOW}AWS WAF (AWS WAF) detecta scanners${RESET}           ${RED}║${RESET}"
+        echo -e "  ${RED}║${RESET}  ${YELLOW}rate limiting por IP apos ~100 req/min.${RESET}      ${RED}║${RESET}"
+        echo -e "  ${RED}║${RESET}  ${YELLOW}Use --delay 800ms + rotate IP (proxy rotatorio)${RESET}${RED}║${RESET}"
+        echo -e "  ${RED}║${RESET}  ${CYAN}AWS Shield Standard inclui auto-mitigacao${RESET}      ${RED}║${RESET}"
+        echo -e "  ${RED}║${RESET}  ${CYAN}Apos bloqueio: Erro 503 com x-amz-cf-pop${RESET}       ${RED}║${RESET}"
+        ;;
+      Akamai)
+        echo -e "  ${RED}║${RESET}  ${YELLOW}Akamai Kona WAF analisa padrao de trafego.${RESET}   ${RED}║${RESET}"
+        echo -e "  ${RED}║${RESET}  ${YELLOW}Detecta scanners por fingerprint HTTP.${RESET}        ${RED}║${RESET}}
+        echo -e "  ${RED}║${RESET}  ${YELLOW}Use -H 'Accept-Language: pt-BR,pt;q=0.9'${RESET}    ${RED}║${RESET}}
+        echo -e "  ${RED}║${RESET}  ${CYAN}Akamai e conhecido por bloquear IPs apos${RESET}       ${RED}║${RESET}"
+        echo -e "  ${RED}║${RESET}  ${CYAN}firewall rising (5 min de cooling)${RESET}             ${RED}║${RESET}"
+        ;;
+      Incapsula)
+        echo -e "  ${RED}║${RESET}  ${YELLOW}Imperva/Incapsula: WAF com learning behavior.${RESET} ${RED}║${RESET}"
+        echo -e "  ${RED}║${RESET}  ${YELLOW}Bloqueia por reputacao de IP + padrao de URL.${RESET} ${RED}║${RESET}}
+        echo -e "  ${RED}║${RESET}  ${CYAN}Apos bloqueio: pagina 'Incapsula Resource'${RESET}     ${RED}║${RESET}"
+        echo -e "  ${RED}║${RESET}  ${CYAN}Proxies SOCKS5 recomendados.${RESET}                   ${RED}║${RESET}"
+        ;;
+      "Google Cloud")
+        echo -e "  ${RED}║${RESET}  ${YELLOW}Google Cloud Armor: rate limit configuravel.${RESET}  ${RED}║${RESET}"
+        echo -e "  ${RED}║${RESET}  ${YELLOW}Geralmente tolerante ate 200 req/min.${RESET}         ${RED}║${RESET}}
+        echo -e "  ${RED}║${RESET}  ${CYAN}Detecta por User-Agent incomum.${RESET}                ${RED}║${RESET}"
+        ;;
+      "Azure CDN")
+        echo -e "  ${RED}║${RESET}  ${YELLOW}Azure WAF: mode Prevention ou Detection.${RESET}     ${RED}║${RESET}"
+        echo -e "  ${RED}║${RESET}  ${YELLOW}Azure Front Door + WAF custa creditos${RESET}        ${RED}║${RESET}}
+        echo -e "  ${RED}║${RESET}  ${CYAN}Menos agressivo que Cloudflare/Akamai.${RESET}         ${RED}║${RESET}"
+        ;;
+      "Sucuri")
+        echo -e "  ${RED}║${RESET}  ${YELLOW}Sucuri WAF: bloqueia por payload malicioso.${RESET}  ${RED}║${RESET}}
+        echo -e "  ${RED}║${RESET}  ${YELLOW}Muito usado em WordPress.${RESET}                    ${RED}║${RESET}"
+        echo -e "  ${RED}║${RESET}  ${CYAN}Detecta sqlmap, nikto, nuclei facilmente.${RESET}      ${RED}║${RESET}"
+        ;;
+      *)
+        echo -e "  ${RED}║${RESET}  ${YELLOW}Provedor CDN detectado. Modo FURTIVO${RESET}          ${RED}║${RESET}"
+        echo -e "  ${RED}║${RESET}  ${YELLOW}recomendado (delay 1s + sem brute force).${RESET}    ${RED}║${RESET}"
+        ;;
+    esac
+
     echo -e "  ${RED}║${RESET}                                               ${RED}║${RESET}"
     if [ "$MODO" = "bruto" ]; then
-      echo -e "  ${RED}║${RESET}  ${YELLOW}Recomenda-se usar MODO MEDIO ou CUSTOM com        ${RED}║${RESET}"
-      echo -e "  ${RED}║${RESET}  taxa reduzida. Deseja continuar? (s/N)         ${RED}║${RESET}"
+      echo -e "  ${RED}║${RESET}  ${YELLOW}Modo BRUTO contra $provedor = ${chance}% chance de${RESET}  ${RED}║${RESET}"
+      echo -e "  ${RED}║${RESET}  ${YELLOW}bloqueio em <5 min. Troque para MEDIO.${RESET}          ${RED}║${RESET}"
+      echo -e "  ${RED}║${RESET}  Deseja continuar? (s/N)                         ${RED}║${RESET}"
       echo -e "  ${RED}╚══════════════════════════════════════════════════╝${RESET}"
       printf "${YELLOW}Continuar mesmo assim? (s/N): ${RESET}"; read -r cloud_ok
       [[ "$cloud_ok" != "s" && "$cloud_ok" != "S" ]] && { aviso "Scan abortado pelo aviso de nuvem"; exit 1; }
-      aviso "Continuando em modo bruto contra nuvem (risco EDoS assumido)"
+      aviso "Continuando em modo bruto contra nuvem (risco EDoS + bloqueio assumido)"
     else
       echo -e "  ${RED}╚══════════════════════════════════════════════════╝${RESET}"
     fi
     return 0
-  }
+  fi
   return 0
 }
 
@@ -696,6 +854,47 @@ if [ $# -ge 1 ]; then
     ALVOS+=("$url")
   done
 else
+  echo ""
+echo ""
+echo -e "${YELLOW}${BOLD}╔══════════════════════════════════════════════════╗${RESET}"
+echo -e "${YELLOW}${BOLD}║           SEGURANCA OPERACIONAL (OPSEC)        ║${RESET}"
+echo -e "${YELLOW}${BOLD}╠══════════════════════════════════════════════════╣${RESET}"
+echo -e "${YELLOW}${BOLD}║${RESET}  ${RED}ATENCAO: Seu IP real ($(curl -s --connect-timeout 3 ifconfig.me 2>//dev/null || echo "desconhecido")) sera exposto!${RESET}"
+echo -e "${YELLOW}${BOLD}║${RESET}  Recomenda-se usar VPN, Tor ou proxy SOCKS5."
+echo -e "${YELLOW}${BOLD}║${RESET}"
+echo -e "${YELLOW}${BOLD}║${RESET}  ${CYAN}[p] Configurar proxy${RESET}"
+echo -e "${YELLOW}${BOLD}║${RESET}  ${CYAN}[i] Instalar dependencias${RESET}"
+echo -e "${YELLOW}${BOLD}║${RESET}  ${CYAN}[qualquer tecla] Continuar${RESET}"
+echo -e "${YELLOW}${BOLD}╚══════════════════════════════════════════════════╝${RESET}"
+echo -ne "${BOLD}Opcao: ${RESET}"; read -r ops_op
+case "$ops_op" in
+  p|P)
+    echo -ne "${YELLOW}Proxy (ex: http://127.0.0.1:8080, socks5://127.0.0.1:9050): ${RESET}"; read -r PROXY
+    echo "$PROXY" | grep -qi "socks" && PROXY_TIPO="socks" || PROXY_TIPO="http"
+    echo -e "${GREEN}[+] Proxy configurado: $PROXY ($PROXY_TIPO)${RESET}"
+    echo -e "${YELLOW}[!] Todo o trafego passara pelo proxy. Testando...${RESET}"
+    PROXY_IP=$(curl --connect-timeout 5 -s --proxy "$PROXY" ifconfig.me 2>/dev/null || echo "falhou")
+    echo -e "  ${CYAN}IP do proxy: $PROXY_IP${RESET}"
+    if [ "$PROXY_IP" = "falhou" ]; then
+      echo -e "${RED}[!] Proxy nao respondeu! Verifique e reinicie.${RESET}"
+      echo -ne "${YELLOW}Continuar sem proxy? (S/n): ${RESET}"; read -r sem_proxy
+      [[ "$sem_proxy" = "n" || "$sem_proxy" = "N" ]] && exit 1
+      PROXY=""; PROXY_TIPO="nenhum"
+    fi ;;
+  i|I)
+    echo -e "\n${CYAN}Instalando dependencias...${RESET}"
+    echo -e "${YELLOW}Go tools: gau, katana, dalfox, waybackurls, gowitness${RESET}"
+    export GOPATH=$HOME/go
+    mkdir -p $HOME/go/bin
+    for tool in "github.com/lc/gau/v2/cmd/gau@latest" "github.com/projectdiscovery/katana/cmd/katana@latest" "github.com/hahwul/dalfox/v2@latest" "github.com/tomnomnom/waybackurls@latest" "github.com/sensepost/gowitness@latest"; do
+      name=$(basename "$tool" | sed 's/@.*//')
+      if command -v "$name" &>/dev/null; then echo -e "  ${GREEN}[\xe2\x9c\x93]${RESET} $name ja instalado"; continue; fi
+      echo -ne "  ${CYAN}[*]${RESET} Instalando $name... "
+      go install "$tool" &>/dev/null && echo -e "${GREEN}OK${RESET}" || echo -e "${RED}FALHOU${RESET}"
+    done
+    echo -e "${GREEN}[+] Instalacao concluida. Execute novamente.${RESET}"
+    exit 0 ;;
+esac
   echo ""
   echo -e "${BOLD}Selecione o modo de scan:${RESET}"
   echo -e "  ${GREEN}[1]${RESET} Alvo unico"
@@ -808,11 +1007,12 @@ echo -e "${CYAN}${BOLD}╚══════════════════
 echo ""
 printf "${YELLOW}Escolha o modo (1-4): ${RESET}"; read -r MODO_ESCOLHA
 case $MODO_ESCOLHA in
-  1) MODO="furtivo"; NOISE_MAX=3; RATE_LIMIT_MS=1000 ;;
-  2) MODO="medio"; NOISE_MAX=5; RATE_LIMIT_MS=300 ;;
-  3) MODO="bruto"; NOISE_MAX=7; RATE_LIMIT_MS=100 ;;
-  4) MODO="custom"; RATE_LIMIT_MS=200 ;;
-  *) echo -e "${RED}Opcao invalida. Usando MEDIO.${RESET}"; MODO="medio"; NOISE_MAX=5; RATE_LIMIT_MS=300 ;;
+   1) MODO="furtivo"; NOISE_MAX=3; RATE_LIMIT_MS=1000
+     echo -e "${GREEN}[+] Modo furtivo: delay base ${RATE_LIMIT_MS}ms + jitter 200-600ms, apenas recon passivo (sem brute force)${RESET}" ;;
+   2) MODO="medio"; NOISE_MAX=5; RATE_LIMIT_MS=300 ;;
+   3) MODO="bruto"; NOISE_MAX=7; RATE_LIMIT_MS=100 ;;
+   4) MODO="custom"; RATE_LIMIT_MS=200 ;;
+   *) echo -e "${RED}Opcao invalida. Usando MEDIO.${RESET}"; MODO="medio"; NOISE_MAX=5; RATE_LIMIT_MS=300 ;;
 esac
 
 # Calcula threads das ferramentas baseado no rate limit
@@ -915,6 +1115,9 @@ PORTA=$(echo "$ALVO" | sed 's|https\?://||' | cut -d/ -f1 | grep -o ':[0-9]*$' |
 [ -z "$PORTA" ] && [ "$PROTOCOLO" = "https" ] && PORTA=443
 [ -z "$PORTA" ] && PORTA=80
 PROTOCOLO=$(echo "$ALVO" | grep -q 'https' && echo "https" || echo "http")
+# Garante que REPORT_DIR nao usa /tmp
+[ "$REPORT_DIR" = "/tmp" ] && REPORT_DIR="$SCRIPT_DIR/reports/$(date +%Y%m%d)" && mkdir -p "$REPORT_DIR" 2>/dev/null
+_CLEANUP_DIRS+=("$PAR_DIR")
 REPORT_DIR="$SCRIPT_DIR/reports/$(date +%Y%m%d)"
 mkdir -p "$REPORT_DIR" 2>/dev/null || REPORT_DIR="/tmp"
 REPORT="$REPORT_DIR/DeepRecon_${DOMINIO}_$(date +%Y%m%d_%H%M%S).txt"
@@ -970,6 +1173,7 @@ progresso() {
   cn=$([ "$np" -le 30 ]&&echo "$GREEN"||[ "$np" -le 60 ]&&echo "$YELLOW"||echo "$RED")
   echo -e "\n${CYAN}[${PERCENT}%] $nome${RESET}"
   echo -e "  ${cn}Ruido: [${bf}${be}] ${np}%${RESET}"
+  checkpoint_save
 }
 
 info() {
@@ -1005,6 +1209,9 @@ echo -e "${MAGENTA}${BOLD}║${RESET}  ${BOLD}Data:${RESET}      $(date '+%d/%m/
 echo -e "${MAGENTA}${BOLD}║${RESET}  ${BOLD}Relatorio:${RESET} ${CYAN}$REPORT${RESET}"
 echo -e "${MAGENTA}${BOLD}╚══════════════════════════════════════════════════╝${RESET}"
 echo ""
+
+# Se detectou bloqueio, para o scan aqui
+[ "$BLOQUEIO_CONT" -ge "$MAX_BLOQUEIO" ] && continue
 
 # === VALIDACAO DE CONEXAO ===
 verificar_conexao "$ALVO"; CONEXAO_RC=$?
