@@ -745,29 +745,29 @@ detectar_nuvem() {
         ;;
       Akamai)
         echo -e "  ${RED}║${RESET}  ${YELLOW}Akamai Kona WAF analisa padrao de trafego.${RESET}   ${RED}║${RESET}"
-        echo -e "  ${RED}║${RESET}  ${YELLOW}Detecta scanners por fingerprint HTTP.${RESET}        ${RED}║${RESET}}
-        echo -e "  ${RED}║${RESET}  ${YELLOW}Use -H 'Accept-Language: pt-BR,pt;q=0.9'${RESET}    ${RED}║${RESET}}
+        echo -e "  ${RED}║${RESET}  ${YELLOW}Detecta scanners por fingerprint HTTP.${RESET}        ${RED}║${RESET}"
+        echo -e "  ${RED}║${RESET}  ${YELLOW}Use -H 'Accept-Language: pt-BR,pt;q=0.9'${RESET}    ${RED}║${RESET}"
         echo -e "  ${RED}║${RESET}  ${CYAN}Akamai e conhecido por bloquear IPs apos${RESET}       ${RED}║${RESET}"
         echo -e "  ${RED}║${RESET}  ${CYAN}firewall rising (5 min de cooling)${RESET}             ${RED}║${RESET}"
         ;;
       Incapsula)
         echo -e "  ${RED}║${RESET}  ${YELLOW}Imperva/Incapsula: WAF com learning behavior.${RESET} ${RED}║${RESET}"
-        echo -e "  ${RED}║${RESET}  ${YELLOW}Bloqueia por reputacao de IP + padrao de URL.${RESET} ${RED}║${RESET}}
+        echo -e "  ${RED}║${RESET}  ${YELLOW}Bloqueia por reputacao de IP + padrao de URL.${RESET} ${RED}║${RESET}"
         echo -e "  ${RED}║${RESET}  ${CYAN}Apos bloqueio: pagina 'Incapsula Resource'${RESET}     ${RED}║${RESET}"
         echo -e "  ${RED}║${RESET}  ${CYAN}Proxies SOCKS5 recomendados.${RESET}                   ${RED}║${RESET}"
         ;;
       "Google Cloud")
         echo -e "  ${RED}║${RESET}  ${YELLOW}Google Cloud Armor: rate limit configuravel.${RESET}  ${RED}║${RESET}"
-        echo -e "  ${RED}║${RESET}  ${YELLOW}Geralmente tolerante ate 200 req/min.${RESET}         ${RED}║${RESET}}
+        echo -e "  ${RED}║${RESET}  ${YELLOW}Geralmente tolerante ate 200 req/min.${RESET}         ${RED}║${RESET}"
         echo -e "  ${RED}║${RESET}  ${CYAN}Detecta por User-Agent incomum.${RESET}                ${RED}║${RESET}"
         ;;
       "Azure CDN")
         echo -e "  ${RED}║${RESET}  ${YELLOW}Azure WAF: mode Prevention ou Detection.${RESET}     ${RED}║${RESET}"
-        echo -e "  ${RED}║${RESET}  ${YELLOW}Azure Front Door + WAF custa creditos${RESET}        ${RED}║${RESET}}
+        echo -e "  ${RED}║${RESET}  ${YELLOW}Azure Front Door + WAF custa creditos${RESET}        ${RED}║${RESET}"
         echo -e "  ${RED}║${RESET}  ${CYAN}Menos agressivo que Cloudflare/Akamai.${RESET}         ${RED}║${RESET}"
         ;;
       "Sucuri")
-        echo -e "  ${RED}║${RESET}  ${YELLOW}Sucuri WAF: bloqueia por payload malicioso.${RESET}  ${RED}║${RESET}}
+        echo -e "  ${RED}║${RESET}  ${YELLOW}Sucuri WAF: bloqueia por payload malicioso.${RESET}  ${RED}║${RESET}"
         echo -e "  ${RED}║${RESET}  ${YELLOW}Muito usado em WordPress.${RESET}                    ${RED}║${RESET}"
         echo -e "  ${RED}║${RESET}  ${CYAN}Detecta sqlmap, nikto, nuclei facilmente.${RESET}      ${RED}║${RESET}"
         ;;
@@ -792,6 +792,55 @@ detectar_nuvem() {
     return 0
   fi
   return 0
+}
+
+# ── ANALISE DE PROVEDOR (tabela completa) ──
+exibir_analise_provedor() {
+  local ip="$1" headers="$2"
+  local provedor="" chance="" risco="" req_antes="" comportamento="" bypass=""
+
+  if echo "$headers" | grep -qiE "cf-ray|__cfduid|cf-cache-status|server.*cloudflare|x-robots-tag.*cloudflare"; then
+    provedor="Cloudflare";       chance="92";  risco="ALTO";  req_antes="50-100";  comportamento="Challenge JS + CAPTCHA + rate limit por IP";                   bypass="CloudScraper, curl_cffi, delay 1500ms, proxy rotativo"
+  elif echo "$headers" | grep -qiE "x-amz-cf-id|x-amz-request-id|server.*cloudfront|via.*cloudfront"; then
+    provedor="AWS CloudFront";   chance="85";  risco="ALTO";  req_antes="100-200"; comportamento="AWS WAF + Shield, bloqueio por fingerprint HTTP";              bypass="Proxy rotatorio, delay 800ms, UA real"
+  elif echo "$headers" | grep -qiE "server.*akamai|akamai-x-cache|X-Akamai|X-Akamai-*"; then
+    provedor="Akamai";           chance="88";  risco="ALTO";  req_antes="80-150";  comportamento="Kona WAF, firewall rising 5min, fingerprint TLS";              bypass="Session persistence, delay 2s, UA variado"
+  elif echo "$headers" | grep -qiE "server.*incapsula|x-incapsula|x-ic-*"; then
+    provedor="Incapsula";        chance="90";  risco="ALTO";  req_antes="60-120";  comportamento="Learning WAF, reputacao de IP, bloqueio por URL pattern";        bypass="SOCKS5, delay aleatorio, evitar payloads obvios"
+  elif echo "$headers" | grep -qiE "x-guploader|x-goog-*|server.*gfe|via.*google"; then
+    provedor="Google Cloud";     chance="78";  risco="MEDIO"; req_antes="150-300"; comportamento="Cloud Armor, tolerante ate 200 req/min";                       bypass="UA realista, delay 500ms"
+  elif echo "$headers" | grep -qiE "x-azure-*|azure.*cdn|x-served-by.*azure"; then
+    provedor="Azure CDN";        chance="75";  risco="MEDIO"; req_antes="200-400"; comportamento="Azure WAF (Prevention/Detection), Front Door";                  bypass="Delay 500ms, evitar SQLi obvio"
+  elif echo "$headers" | grep -qiE "x-fastly|via.*fastly|server.*fastly"; then
+    provedor="Fastly";           chance="80";  risco="MEDIO"; req_antes="100-200"; comportamento="VCL-based WAF, blocking por header anomalo";                    bypass="Headers HTTP realistas"
+  elif echo "$headers" | grep -qiE "x-stackpath|server.*stackpath|via.*stackpath"; then
+    provedor="StackPath";        chance="70";  risco="MEDIO"; req_antes="150-250"; comportamento="WAF basico, rate limit por IP";                                 bypass="Delay 800ms + UA rotation"
+  elif echo "$headers" | grep -qiE "server.*ovh|x-ovh-*"; then
+    provedor="OVH";              chance="45";  risco="BAIXO"; req_antes="400-800"; comportamento="Anti-DDoS gateway, pouca deteccao de scanner";                  bypass="Baixo risco, delay 300ms suficiente"
+  elif echo "$headers" | grep -qiE "x-diaspro|server.*arvan|via.*arvan"; then
+    provedor="ArvanCloud";       chance="72";  risco="MEDIO"; req_antes="100-200"; comportamento="WAF cloud iraniano, rate limit agressivo";                      bypass="Delay 1s + proxy"
+  elif echo "$headers" | grep -qiE "x-sucuri|x-sucuri-*"; then
+    provedor="Sucuri";           chance="82";  risco="ALTO";  req_antes="60-100";  comportamento="WAF WordPress, bloqueia sqlmap/nikto facilmente";                 bypass="Delay 2s, evitar User-Agent de pentest"
+  elif echo "$headers" | grep -qiE "x-cache.*nginx|server.*nginx.*proxy|via.*varnish"; then
+    provedor="Nginx Proxy/Varnish"; chance="55"; risco="BAIXO"; req_antes="300-600"; comportamento="Proxy reverso simples, sem WAF avancado";                    bypass="Delay 300ms suficiente"
+  fi
+
+  [ -z "$provedor" ] && return
+
+  echo ""
+  echo -e "${CYAN}${BOLD}╔══════════════════════════════════════════════════════════════╗${RESET}"
+  echo -e "${CYAN}${BOLD}║          ANALISE DE PROVEDOR - ESTUDO DE DETECCAO          ║${RESET}"
+  echo -e "${CYAN}${BOLD}╠══════════════════════════════════════════════════════════════╣${RESET}"
+  echo -e "${CYAN}${BOLD}║${RESET}"
+  printf "${CYAN}${BOLD}║${RESET}  %-20s ${BOLD}%s${RESET}\n" "Provedor:" "$provedor"
+  printf "${CYAN}${BOLD}║${RESET}  %-20s ${YELLOW}%s%%${RESET}\n" "Chance deteccao:" "$chance"
+  printf "${CYAN}${BOLD}║${RESET}  %-20s ${RED}%s${RESET}\n" "Risco:" "$risco"
+  printf "${CYAN}${BOLD}║${RESET}  %-20s %s\n" "Req. antes bloq.:" "$req_antes"
+  printf "${CYAN}${BOLD}║${RESET}  %-20s %s\n" "Comportamento:" "$comportamento"
+  printf "${CYAN}${BOLD}║${RESET}  %-20s %s\n" "Bypass recomendado:" "$bypass"
+  echo -e "${CYAN}${BOLD}║${RESET}"
+  echo -e "${CYAN}${BOLD}╚══════════════════════════════════════════════════════════════╝${RESET}"
+  echo ""
 }
 
 # ============================================================
@@ -1235,6 +1284,7 @@ SCOPE_ALVOS=()
 HEADERS_INICIAIS=$(curl_rapido -I "$ALVO" 2>/dev/null)
 IP_ALVO=$(host "$DOMINIO" 2>/dev/null | awk '/has address/{print $NF; exit}')
 detectar_nuvem "$IP_ALVO" "$HEADERS_INICIAIS"
+exibir_analise_provedor "$IP_ALVO" "$HEADERS_INICIAIS"
 
 # === MODO SEGURO ===
 detectar_forms_agressivos "$ALVO"
