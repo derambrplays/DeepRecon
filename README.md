@@ -124,6 +124,8 @@ cat /tmp/DeepRecon_*.json | jq .  # JSON (requer jq)
 - **JSON Export**: saída estruturada para ferramentas externas
 - **Relatório pós-ataque**: exibe resultados completos após o menu de ataque
 - **OPSEC integrado**: aviso de IP real, configuração de proxy SOCKS5/HTTP com teste de conectividade, rotação de User-Agent a cada request
+- **Modo Anônimo**: `[a]` ativa proxychains4 + env vars de proxy em todas as 43 ferramentas — bloqueia DNS leak em Go tools (gobuster, ffuf, subfinder, amass, katana, gau) e C tools (nmap, nikto, hydra)
+- **Modo Direto**: `[d]` desativa proxy e roda com IP real — útil se VPN já estiver ativa no sistema
 - **Detecção de bloqueio**: WAF detection no curl com contador — após 5 bloqueios, encerra o scan com recomendações
 - **Checkpoint system**: salva progresso do scan e permite retomar de onde parou
 - **Instalador de dependências**: menu interativo que baixa todas as Go tools (gau, katana, dalfox, waybackurls, gowitness)
@@ -218,6 +220,12 @@ cat /tmp/DeepRecon_*.json | jq .  # JSON (requer jq)
 ### 14. PATH Corrigido ao Executar com Sudo
 - `go install` instala em `~/go/bin/`, mas com `sudo ./deeprecon.sh` o `$HOME` vira `/root` — tools não eram encontradas
 - Agora detecta `SUDO_USER`, resolve o home original via `getent` e adiciona `$USER_HOME/go/bin` ao PATH
+
+### 15. DNS Leak — Vazamento de DNS em Ferramentas Externas
+- O proxy era configurado apenas via `--proxy` do curl — ferramentas Go (gobuster, ffuf, subfinder, amass, gau, katana) e C (nmap, nikto, hydra) resolviam DNS localmente antes de enviar tráfego, vazando todos os domínios escaneados para o provedor de internet
+- **Modo anônimo `[a]`**: exporta `http_proxy`/`https_proxy`/`ALL_PROXY` (respeitado por Go tools), envelopa comandos com `proxychains4` (força DNS via proxy), e gera config temporária do proxychains com o proxy do usuário
+- **Modo direto `[d]`**: desativa proxy e limpa env vars — para uso quando VPN do sistema já está ativa
+- **Detecção automática**: `proxychains4` é detectado no PATH; se ausente, avisa e oferece continuar só com env vars (proteção parcial)
 
 ## Requisitos
 

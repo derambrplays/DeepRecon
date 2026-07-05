@@ -49,6 +49,33 @@ proximo_ua() {
 # ── PROXY / TOR ──
 PROXY=""
 PROXY_TIPO="nenhum"
+ANON_MODE=0
+PROXYCHAINS_CMD=""
+detectar_proxychains() {
+  command -v proxychains4 &>/dev/null && PROXYCHAINS_CMD="proxychains4" && return 0
+  command -v proxychains &>/dev/null && PROXYCHAINS_CMD="proxychains" && return 0
+  return 1
+}
+export_proxy_env() {
+  [ -z "$PROXY" ] && return
+  export http_proxy="$PROXY"
+  export https_proxy="$PROXY"
+  export HTTP_PROXY="$PROXY"
+  export HTTPS_PROXY="$PROXY"
+  if echo "$PROXY" | grep -qi "socks"; then
+    export ALL_PROXY="$PROXY"
+    export all_proxy="$PROXY"
+  fi
+}
+run_anon() {
+  if [ -n "$PROXY" ] && [ "$ANON_MODE" = "0" ]; then
+    "$@"
+  elif [ -n "$PROXY" ] && [ -n "$PROXYCHAINS_CMD" ]; then
+    "$PROXYCHAINS_CMD" "$@"
+  else
+    "$@"
+  fi
+}
 
 # ── CHECKPOINT ──
 CHECKPOINT_FILE=""
@@ -924,13 +951,17 @@ if [ $# -ge 1 ]; then
 else
   echo ""
 echo ""
+while true; do
+echo ""
 echo -e "${YELLOW}${BOLD}╔══════════════════════════════════════════════════╗${RESET}"
 echo -e "${YELLOW}${BOLD}║           SEGURANCA OPERACIONAL (OPSEC)        ║${RESET}"
 echo -e "${YELLOW}${BOLD}╠══════════════════════════════════════════════════╣${RESET}"
-echo -e "${YELLOW}${BOLD}║${RESET}  ${RED}ATENCAO: Seu IP real ($(curl -s --connect-timeout 3 ifconfig.me 2>//dev/null || echo "desconhecido")) sera exposto!${RESET}"
+echo -e "${YELLOW}${BOLD}║${RESET}  ${RED}ATENCAO: Seu IP real ($(curl -s --connect-timeout 3 ifconfig.me 2>/dev/null || echo "desconhecido")) sera exposto!${RESET}"
 echo -e "${YELLOW}${BOLD}║${RESET}  Recomenda-se usar VPN, Tor ou proxy SOCKS5."
 echo -e "${YELLOW}${BOLD}║${RESET}"
 echo -e "${YELLOW}${BOLD}║${RESET}  ${CYAN}[p] Configurar proxy${RESET}"
+echo -e "${YELLOW}${BOLD}║${RESET}  ${CYAN}[a] Modo anonimo (proxychains + proxy)${RESET}"
+echo -e "${YELLOW}${BOLD}║${RESET}  ${CYAN}[d] Modo direto (SEM anonimato, usa IP real)${RESET}"
 echo -e "${YELLOW}${BOLD}║${RESET}  ${CYAN}[i] Instalar dependencias${RESET}"
 echo -e "${YELLOW}${BOLD}║${RESET}  ${CYAN}[qualquer tecla] Continuar${RESET}"
 echo -e "${YELLOW}${BOLD}╚══════════════════════════════════════════════════╝${RESET}"
@@ -940,6 +971,7 @@ case "$ops_op" in
     echo -ne "${YELLOW}Proxy (ex: http://127.0.0.1:8080, socks5://127.0.0.1:9050): ${RESET}"; read -r PROXY
     echo "$PROXY" | grep -qi "socks" && PROXY_TIPO="socks" || PROXY_TIPO="http"
     echo -e "${GREEN}[+] Proxy configurado: $PROXY ($PROXY_TIPO)${RESET}"
+    export_proxy_env
     echo -e "${YELLOW}[!] Todo o trafego passara pelo proxy. Testando...${RESET}"
     PROXY_IP=$(curl --connect-timeout 5 -s --proxy "$PROXY" ifconfig.me 2>/dev/null || echo "falhou")
     echo -e "  ${CYAN}IP do proxy: $PROXY_IP${RESET}"
@@ -985,7 +1017,58 @@ case "$ops_op" in
     done
     echo -e "${GREEN}[+] Instalacao concluida. Execute novamente.${RESET}"
     exit 0 ;;
+  a|A)
+    detectar_proxychains
+    if [ -z "$PROXY" ]; then
+      echo -ne "${YELLOW}Proxy para modo anonimo (ex: socks5://127.0.0.1:9050): ${RESET}"; read -r PROXY
+      [ -z "$PROXY" ] && { echo -e "${RED}Proxy obrigatorio para modo anonimo.${RESET}"; PROXY=""; continue; }
+      echo "$PROXY" | grep -qi "socks" && PROXY_TIPO="socks" || PROXY_TIPO="http"
+    fi
+    if [ -z "$PROXYCHAINS_CMD" ]; then
+      echo -e "${RED}[!] proxychains4 nao encontrado. Instale com: sudo apt install proxychains4${RESET}"
+      echo -ne "${YELLOW}Usar apenas env vars (Go tools respeitam, C tools podem vazar DNS)? (S/n): ${RESET}"; read -r sem_pc
+      [[ "$sem_pc" = "n" || "$sem_pc" = "N" ]] && continue
+    fi
+    ANON_MODE=1
+    export_proxy_env
+    # Configura proxychains para usar o proxy configurado
+    if [ -n "$PROXYCHAINS_CMD" ]; then
+      _pc_conf="/etc/proxychains4.conf"
+      [ ! -f "$_pc_conf" ] && _pc_conf="/etc/proxychains.conf"
+      if [ -f "$_pc_conf" ]; then
+        # Cria config temporaria com o proxy do usuario (evita editar /etc)
+        _tmp_pc_conf=$(mktemp)
+        grep -v "^socks4\|^socks5\|^http" "$_pc_conf" 2>/dev/null > "$_tmp_pc_conf"
+        echo "$PROXY" >> "$_tmp_pc_conf"
+        export PROXYCHAINS_CONF="$_tmp_pc_conf"
+        _CLEANUP_DIRS+=("$_tmp_pc_conf")
+      fi
+    fi
+    # Testa o proxy com proxychains
+    if [ -n "$PROXYCHAINS_CMD" ]; then
+      echo -e "${YELLOW}[!] Testando proxy via $PROXYCHAINS_CMD...${RESET}"
+      PROXY_IP=$("$PROXYCHAINS_CMD" curl -s --connect-timeout 10 --max-time 15 ifconfig.me 2>/dev/null || echo "falhou")
+    else
+      PROXY_IP=$(curl -s --connect-timeout 10 --max-time 15 --proxy "$PROXY" ifconfig.me 2>/dev/null || echo "falhou")
+    fi
+    echo -e "  ${CYAN}IP anonimizado: $PROXY_IP${RESET}"
+    if [ "$PROXY_IP" = "falhou" ]; then
+      echo -e "${RED}[!] Proxy nao respondeu! Verifique e reinicie.${RESET}"
+      echo -ne "${YELLOW}Continuar sem anonimato? (S/n): ${RESET}"; read -r sem_proxy
+      [[ "$sem_proxy" = "n" || "$sem_proxy" = "N" ]] && exit 1
+      PROXY=""; PROXY_TIPO="nenhum"; ANON_MODE=0
+    else
+      echo -e "${GREEN}[+] Modo anonimo ativado: ${PROXYCHAINS_CMD:-proxy direto} + env vars${RESET}"
+      echo -e "${YELLOW}[!] DNS leak protegido: todas as ferramentas externas passarao por proxy${RESET}"
+    fi ;;
+  d|D)
+    echo -e "${YELLOW}[!] Modo direto: SEM anonimato. Usando IP real.${RESET}"
+    PROXY=""; PROXY_TIPO="nenhum"; ANON_MODE=0
+    unset http_proxy https_proxy HTTP_PROXY HTTPS_PROXY ALL_PROXY all_proxy ;;
+  *)
+    break ;;
 esac
+done
   echo ""
   echo -e "${BOLD}Selecione o modo de scan:${RESET}"
   echo -e "  ${GREEN}[1]${RESET} Alvo unico"
@@ -1362,7 +1445,7 @@ echo "$HEADERS" | grep -i "^set-cookie:" | grep -vi "secure" && aviso "Cookie se
 # ===== PASSO 3: WHATWEB =====
 progresso "WhatWeb - Identificando tecnologias" 2
 if valida_ferramenta "whatweb"; then
-  WHATWEB_OUT=$(whatweb -a 3 "$ALVO" 2>/dev/null)
+  WHATWEB_OUT=$(run_anon whatweb -a 3 "$ALVO" 2>/dev/null)
   echo "$WHATWEB_OUT"
   echo "$WHATWEB_OUT" | grep -qi "WordPress" && TEC_WP=1 && TEC_NOME="${TEC_NOME} WordPress"
   echo "$WHATWEB_OUT" | grep -qi "Joomla" && TEC_JOOMLA=1 && TEC_NOME="${TEC_NOME} Joomla"
@@ -1386,7 +1469,7 @@ fi
 # ===== PASSO 4: SSL =====
 progresso "SSLScan - Verificando SSL/TLS" 2
 if [ "$PROTOCOLO" = "https" ] && valida_ferramenta "sslscan"; then
-  SSL_OUT=$(sslscan "$DOMINIO" 2>/dev/null) || aviso "sslscan falhou"
+  SSL_OUT=$(run_anon sslscan "$DOMINIO" 2>/dev/null) || aviso "sslscan falhou"
   echo "$SSL_OUT" | grep -iE "weak|error|heartbleed|poodle|rc4|cbc|tlsv1\.[01]" | head -15
   echo "$SSL_OUT" | grep -qi "heartbleed" && critico "VULNERAVEL A HEARTBLEED!"
   echo | openssl s_client -connect "${DOMINIO}:443" -servername "$DOMINIO" 2>/dev/null | openssl x509 -noout -subject -dates 2>/dev/null || true
@@ -1397,12 +1480,12 @@ progresso "Subfinder - Descobrindo subdominios" 2
 if valida_ferramenta "subfinder"; then
   while IFS= read -r sub; do
     escopo_adicionar "$sub" && info "  Subdominio: $sub"
-  done < <(subfinder -d "$DOMINIO" -silent 2>/dev/null | head -30) || aviso "subfinder falhou"
+  done < <(run_anon subfinder -d "$DOMINIO" -silent 2>/dev/null | head -30) || aviso "subfinder falhou"
 fi
 if valida_ferramenta "amass"; then
   while IFS= read -r sub; do
     escopo_adicionar "$sub" && info "  Subdominio amass: $sub"
-  done < <(amass enum -d "$DOMINIO" -passive -timeout 30 2>/dev/null | head -30) || aviso "amass falhou"
+  done < <(run_anon amass enum -d "$DOMINIO" -passive -timeout 30 2>/dev/null | head -30) || aviso "amass falhou"
 fi
 
 # ===== PASSO 6: ESCANEAR SUBDOMINIOS =====
@@ -1411,7 +1494,7 @@ if [ ${#SCOPE_ALVOS[@]} -gt 0 ]; then
   for sub_alvo in "${SCOPE_ALVOS[@]}"; do
     info "Scan rapido: $sub_alvo"
     if valida_ferramenta "nmap"; then
-      nmap --top-ports 20 -T4 --open "$sub_alvo" 2>/dev/null | grep -E '^[0-9]' | head -5 || true
+      run_anon nmap --top-ports 20 -T4 --open "$sub_alvo" 2>/dev/null | grep -E '^[0-9]' | head -5 || true
     fi
   done
 fi
@@ -1422,12 +1505,12 @@ if [ "$WEB_ATIVO" = "1" ]; then
   if command -v gau &>/dev/null; then
     echo ""
     echo "=== GAU (GetAllUrls) - Wayback Machine + AlienVault ==="
-    gau --subs "$DOMINIO" 2>/dev/null | head -50 || aviso "gau falhou"
+    run_anon gau --subs "$DOMINIO" 2>/dev/null | head -50 || aviso "gau falhou"
   fi
   if command -v waybackurls &>/dev/null; then
     echo ""
     echo "=== waybackurls - Archive.org ==="
-    waybackurls "$DOMINIO" 2>/dev/null | head -50 || aviso "waybackurls falhou"
+    run_anon waybackurls "$DOMINIO" 2>/dev/null | head -50 || aviso "waybackurls falhou"
   fi
 fi
 
@@ -1436,7 +1519,7 @@ progresso "Nmap - Escaneando portas" 2
 PORTAS_ABERTAS=(); SERVICOS_HTTP=(); WEB_ATIVO=0
 if valida_ferramenta "nmap" && verificar_conexao "$ALVO"; then
   nmap_rate=$([ "$RATE_LIMIT_MS" -ge 500 ] && echo 50 || [ "$RATE_LIMIT_MS" -ge 200 ] && echo 200 || echo 500)
-  NMAP_RAW=$(nmap --top-ports 100 -T4 --max-retries 1 --min-rate "$nmap_rate" --open -sV "$DOMINIO" 2>/dev/null) || aviso "nmap scan de portas falhou"
+  NMAP_RAW=$(run_anon nmap --top-ports 100 -T4 --max-retries 1 --min-rate "$nmap_rate" --open -sV "$DOMINIO" 2>/dev/null) || aviso "nmap scan de portas falhou"
   echo "$NMAP_RAW" | grep -E '^[0-9]|PORT|SERVICE|VERSION' | head -30
   echo ""
   (nmap -sV --script=http-title,http-server-header,http-headers "$DOMINIO" 2>/dev/null || aviso "nmap scripts falhou") | grep -E 'title|Server|Header' | head -10
@@ -1472,7 +1555,7 @@ if [ "$WEB_ATIVO" = "1" ] && valida_ferramenta "gobuster" && verificar_conexao "
     [ ! -f "$WORDLIST" ] && WORDLIST="/usr/share/wordlists/dirb/common.txt"
   fi
   if [ -f "$WORDLIST" ]; then
-    (gobuster dir -u "$ALVO" -w "$WORDLIST" -t "$TOOL_THREADS" -q -s 200,301,302,403,401 -x php,txt,html,bak,zip,tar,sql,json,xml --timeout 5s 2>/dev/null || aviso "gobuster falhou") | head -50
+    (run_anon gobuster dir -u "$ALVO" -w "$WORDLIST" -t "$TOOL_THREADS" -q -s 200,301,302,403,401 -x php,txt,html,bak,zip,tar,sql,json,xml --timeout 5s 2>/dev/null || aviso "gobuster falhou") | head -50
   fi
 fi
 
@@ -1561,7 +1644,7 @@ if [ "$WEB_ATIVO" = "1" ] && valida_ferramenta "ffuf" && verificar_conexao "$ALV
     WL="/usr/share/wordlists/dirb/common.txt"
   fi
   if [ -f "$WL" ]; then
-    (ffuf -u "$ALVO/FUZZ" -w "$WL" -t "$TOOL_THREADS" -rate "$FFUF_RATE" -c -s -fc 404,403 2>/dev/null || aviso "ffuf falhou") | head -40
+    (run_anon ffuf -u "$ALVO/FUZZ" -w "$WL" -t "$TOOL_THREADS" -rate "$FFUF_RATE" -c -s -fc 404,403 2>/dev/null || aviso "ffuf falhou") | head -40
   fi
 fi
 
@@ -1572,7 +1655,7 @@ if [ "$WEB_ATIVO" = "1" ] && [ "$MODO_SEGURO" != "1" ] && valida_ferramenta "wfu
   if [ -n "$PARAM" ]; then
     wl="/usr/share/wordlists/dirb/common.txt"
     [ "$MODO" = "furtivo" ] && wl=$(mini_wordlist) && info "Modo furtivo: wordlist mini"
-    (wfuzz -c -z file,"$wl" -u "${ALVO}?FUZZ=1" -t "$TOOL_THREADS" --hc 404 2>/dev/null || aviso "wfuzz falhou") | head -15
+    (run_anon wfuzz -c -z file,"$wl" -u "${ALVO}?FUZZ=1" -t "$TOOL_THREADS" --hc 404 2>/dev/null || aviso "wfuzz falhou") | head -15
   fi
 else
   [ "$MODO_SEGURO" = "1" ] && info "WFuzz pulado pelo modo seguro"
@@ -1581,7 +1664,7 @@ fi
 # Passo 13.5: Katana - Crawler moderno
 progresso "Katana - Crawler de endpoints" 2
 if [ "$WEB_ATIVO" = "1" ] && command -v katana &>/dev/null && verificar_conexao "$ALVO"; then
-  katana -u "$ALVO" -d 2 -silent -jc -kf -c 20 2>/dev/null | head -80 || aviso "katana falhou"
+  run_anon katana -u "$ALVO" -d 2 -silent -jc -kf -c 20 2>/dev/null | head -80 || aviso "katana falhou"
 fi
 
 progresso "Nikto - Varredura de vulnerabilidades" 2
@@ -1590,7 +1673,7 @@ progresso "Nikto - Varredura de vulnerabilidades" 2
     nikto_opts="-timeout 10 -no404"
     [ "$MODO_SEGURO" = "1" ] && nikto_opts="$nikto_opts -nointeractive -nossl"
     [ "$PROTOCOLO" = "https" ] && [ "$MODO_SEGURO" != "1" ] && nikto_opts="$nikto_opts -ssl"
-    nikto -h "$ALVO" $nikto_opts 2>/dev/null | grep -iE "OSVDB|vulnerable|vuln|click|XSS|SQL|path|disclosure|error|backup|interesting|account|upload|exec|shell|injection" | head -30 || aviso "nikto falhou"
+    run_anon nikto -h "$ALVO" $nikto_opts 2>/dev/null | grep -iE "OSVDB|vulnerable|vuln|click|XSS|SQL|path|disclosure|error|backup|interesting|account|upload|exec|shell|injection" | head -30 || aviso "nikto falhou"
     [ "$MODO_SEGURO" = "1" ] && aviso "Nikto em modo seguro - sem teste SSL, sem interacao com forms"
   fi
 } > "$PAR_DIR/14.out" 2>&1 &
@@ -1600,7 +1683,7 @@ PID14=$!
 progresso "WPScan - WordPress" 2
 if [ "$WEB_ATIVO" = "1" ] && [ "$TEC_WP" = "1" ] && [ -n "$WHATWEB_OUT" ] && valida_ferramenta "wpscan"; then
   wpscan_token="${WPSCAN_API_TOKEN:-}"
-  wpscan --url "$ALVO" --no-update ${wpscan_token:+--api-token "$wpscan_token"} 2>/dev/null | grep -iE "WordPress|theme|plugin|vulnerability|identified|User|admin" | head -15 || aviso "wpscan falhou"
+  run_anon wpscan --url "$ALVO" --no-update ${wpscan_token:+--api-token "$wpscan_token"} 2>/dev/null | grep -iE "WordPress|theme|plugin|vulnerability|identified|User|admin" | head -15 || aviso "wpscan falhou"
 elif [ "$TEC_WP" = "0" ]; then
   info "WPScan pulado - WordPress nao detectado"
 elif [ -z "$WHATWEB_OUT" ]; then
@@ -1610,7 +1693,7 @@ fi
 # Passo 15.5: Nuclei (templates CVE)
 progresso "Nuclei - Buscando CVEs" 2
 if [ "$WEB_ATIVO" = "1" ] && valida_ferramenta "nuclei"; then
-  safe_run "nuclei -u '$ALVO' -t cves,vulnerabilities -severity critical,high -nc -silent -c 20 2>/dev/null | head -20" "Nuclei" 90
+  safe_run "run_anon nuclei -u '$ALVO' -t cves,vulnerabilities -severity critical,high -nc -silent -c 20 2>/dev/null | head -20" "Nuclei" 90
 fi
 
 # Passo 15.6: HTTPX (probe rapido)
@@ -1624,7 +1707,7 @@ progresso "Hydra - Testando senhas (admin)" 2
 {
   if [ "$WEB_ATIVO" = "1" ] && valida_ferramenta "hydra"; then
     if echo "$ALVO" | grep -qE 'login|admin|painel'; then
-      hydra -t 4 -w 3 -l admin -P /usr/share/wordlists/fasttrack.txt "$DOMINIO" http-get / 2>/dev/null | head -10 || aviso "hydra falhou"
+      run_anon hydra -t 4 -w 3 -l admin -P /usr/share/wordlists/fasttrack.txt "$DOMINIO" http-get / 2>/dev/null | head -10 || aviso "hydra falhou"
     fi
   fi
 } > "$PAR_DIR/16hydra.out" 2>&1 &
@@ -1633,7 +1716,7 @@ PID16H=$!
 progresso "DNSRecon - Info DNS" 2
 {
   if valida_ferramenta "dnsrecon"; then
-    dnsrecon -d "$DOMINIO" 2>/dev/null | grep -iE "A |AAAA|MX|NS|SOA|TXT" | head -15 || aviso "dnsrecon falhou"
+    run_anon dnsrecon -d "$DOMINIO" 2>/dev/null | grep -iE "A |AAAA|MX|NS|SOA|TXT" | head -15 || aviso "dnsrecon falhou"
   fi
 } > "$PAR_DIR/16.out" 2>&1 &
 PID16=$!
@@ -1650,7 +1733,7 @@ progresso "SearchSploit - Buscando exploits" 2
 {
   if valida_ferramenta "searchsploit"; then
     SERVER=$(curl_rapido -I "$ALVO" 2>/dev/null | grep -i "^server:" | sed 's/.*: //')
-    [ -n "$SERVER" ] && searchsploit "$SERVER" 2>/dev/null | grep -i "vulnerability\|exploit" | head -10 || aviso "searchsploit falhou"
+    [ -n "$SERVER" ] && run_anon searchsploit "$SERVER" 2>/dev/null | grep -i "vulnerability\|exploit" | head -10 || aviso "searchsploit falhou"
   fi
 } > "$PAR_DIR/18.out" 2>&1 &
 PID18=$!
@@ -1845,7 +1928,7 @@ done
 # ===== PASSO 22.5: DALFOX - XSS AUTOMATICO =====
 info "Dalfox - Varredura XSS automatizada..."
 if [ "$WEB_ATIVO" = "1" ] && command -v dalfox &>/dev/null && verificar_conexao "$ALVO"; then
-  dalfox url "$ALVO" --silence --no-color --depth 2 --delay 500 --only-poc -o /dev/null 2>/dev/null | head -20 || aviso "dalfox falhou"
+  run_anon dalfox url "$ALVO" --silence --no-color --depth 2 --delay 500 --only-poc -o /dev/null 2>/dev/null | head -20 || aviso "dalfox falhou"
 fi
 
 # ===== PASSO 22.6: CLOUD STORAGE DISCOVERY =====
@@ -1950,7 +2033,7 @@ fi
 progresso "GoWitness - Screenshot do alvo" 2
 if [ "$WEB_ATIVO" = "1" ] && command -v gowitness &>/dev/null; then
   mkdir -p "$REPORT_DIR/screenshots" 2>/dev/null
-  gowitness scan single --url "$ALVO" --screenshot-path "$REPORT_DIR/screenshots/" 2>/dev/null || aviso "gowitness falhou"
+  run_anon gowitness scan single --url "$ALVO" --screenshot-path "$REPORT_DIR/screenshots/" 2>/dev/null || aviso "gowitness falhou"
   ls "$REPORT_DIR/screenshots/"*.* 2>/dev/null | head -1 | while read f; do info "Screenshot: $f"; done
 fi
 
@@ -2580,7 +2663,7 @@ progresso "Escaneando portas adicionais (top 1000)" 3
 {
   echo ""
   echo "=== PORTAS ADICIONAIS ==="
-  NMAP_EXTRA=$(nmap -T5 -Pn --top-ports 1000 --open "$DOMINIO" 2>/dev/null | grep -E "^[0-9]+/tcp" | head -20)
+  NMAP_EXTRA=$(run_anon nmap -T5 -Pn --top-ports 1000 --open "$DOMINIO" 2>/dev/null | grep -E "^[0-9]+/tcp" | head -20)
   if [ -n "$NMAP_EXTRA" ]; then
     echo "$NMAP_EXTRA" | while read -r line; do
       port=$(echo "$line" | cut -d/ -f1)
