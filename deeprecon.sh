@@ -143,6 +143,15 @@ RATE_LIMIT_MS=300
 _LAST_CURL=0
 delay_ms() { local ms=$1; sleep $((ms / 1000)).$((ms % 1000)) 2>/dev/null || sleep $((ms / 1000)); }
 
+info() {
+  echo -e "  ${GREEN}[+] $1${RESET}"
+}
+
+aviso() {
+  echo -e "  ${YELLOW}[!] $1${RESET}"
+  echo -e "[ALERTA] $1" >> "$REPORT"
+}
+
 # Carregar variaveis de ambiente e API keys de .env
 SCRIPT_DIR=$(dirname "$(realpath "$0" 2>/dev/null || readlink -f "$0" 2>/dev/null || echo "$0")" 2>/dev/null)
 carregar_env() {
@@ -400,7 +409,8 @@ valida_ferramenta() {
 }
 
 verificar_conexao() {
-  local alvo="$1" dominio="${2:-$(echo "$alvo" | sed 's|https\?://||' | cut -d/ -f1 | cut -d: -f1)}"
+  local alvo="$1"
+  local dominio="${2:-$(echo "$alvo" | sed 's|https\?://||' | cut -d/ -f1 | cut -d: -f1)}"
   # Se tem ferramentas DNS instaladas, tenta resolver
   local dns_ok=1
   if command -v host &>/dev/null || command -v nslookup &>/dev/null || command -v dig &>/dev/null; then
